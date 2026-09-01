@@ -1,0 +1,11 @@
+# 构建产物
+dist/
+logs/
+__pycache__/
+*.pyc
+
+# 业务数据（不上传 GitHub：种子 SQL / 迁移原档 / 配置票据）
+data/
+
+# 本机私有路径/凭据（路径脱敏用）
+scripts/paths.py
