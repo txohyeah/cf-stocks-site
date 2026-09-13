@@ -152,13 +152,19 @@ async function apiStocks(request, env) {
   const category = url.searchParams.get('category') || '';
   const lineCat = url.searchParams.get('lineCat') || '';
   const industry = url.searchParams.get('industry') || '';
+  const recent = url.searchParams.get('recent') === '1';
   const q = (url.searchParams.get('q') || '').trim();
-  let sql = `SELECT s.code, s.name, s.sector, s.category, s.subtype, s.tags, s.desc, s.pe_current, s.pe_date, s.ttm_buy_range, s.buy_range_type
+  let sql = `SELECT s.code, s.name, s.sector, s.category, s.subtype, s.tags, s.desc, s.pe_current, s.pe_date, s.ttm_buy_range, s.buy_range_type, s.added_at
              FROM stocks s WHERE s.tracked = 1`;
   const params = [];
   if (category) { sql += ' AND s.category = ?'; params.push(category); }
   if (lineCat) { sql += ' AND EXISTS (SELECT 1 FROM industry_lines x WHERE x.stock_code = s.code AND x.lineCat = ?)'; params.push(lineCat); }
   if (industry) { sql += ' AND EXISTS (SELECT 1 FROM industry_lines x WHERE x.stock_code = s.code AND x.line_id = ?)'; params.push(industry); }
+  if (recent) {
+    // 最近 24h 添加（东八区），added_at 为 'YYYY-MM-DD HH:MM:SS'（历史纯日期回填为当天 00:00:00）
+    const cutoff = fmtLocal(new Date(Date.now() - 86400000));
+    sql += ' AND s.added_at >= ?'; params.push(cutoff);
+  }
   if (q) {
     sql += ' AND (s.name LIKE ? OR s.code LIKE ? OR s.tags LIKE ? OR s.desc LIKE ? OR s.subtype LIKE ?)';
     const like = '%' + q + '%';
@@ -172,6 +178,12 @@ async function apiStocks(request, env) {
   for (const l of lines) (byCode[l.stock_code] = byCode[l.stock_code] || []).push({ lineCat: l.lineCat, line_id: l.line_id });
   for (const s of results) s.lines = byCode[s.code] || [];
   return json({ ok: true, total: results.length, stocks: results });
+}
+
+// 东八区时间格式化 'YYYY-MM-DD HH:MM:SS'
+function fmtLocal(d) {
+  const off = 8 * 3600 * 1000; // UTC+8
+  return new Date(d.getTime() + off).toISOString().slice(0, 19).replace('T', ' ');
 }
 async function apiIndustries(env) {
   const { results } = await env.DB.prepare(
@@ -316,7 +328,7 @@ export default {
           });
         }
         const rules = (await env.DB.prepare(
-          'SELECT dimension, indicator, red, yellow, green FROM tracking_rules WHERE stock_code = ? ORDER BY sort_order, id').bind(code).all()).results;
+          'SELECT dimension, indicator, red, yellow, green, current_light, current_note FROM tracking_rules WHERE stock_code = ? ORDER BY sort_order, id').bind(code).all()).results;
         const data = (await env.DB.prepare(
           'SELECT dimension, value, as_of FROM tracking_data WHERE stock_code = ? ORDER BY id').bind(code).all()).results;
         const catalysts = (await env.DB.prepare(
@@ -380,8 +392,8 @@ export default {
       }
       return serveStatic(url.origin + '/detail.html', env);
     }
-    // 产业地图/产业详情/文章页
-    const pageMap = { '/industries': '/industries.html', '/articles': '/articles.html' };
+    // 产业地图/产业详情/文章页/聪明钱报告
+    const pageMap = { '/industries': '/industries.html', '/articles': '/articles.html', '/smart-money': '/smart-money.html' };
     const industryPage = p.match(/^\/industry\/([^\/]+)$/);
     if (industryPage) {
       const ind = await env.DB.prepare('SELECT id FROM industries WHERE id = ?').bind(decodeURIComponent(industryPage[1])).first();

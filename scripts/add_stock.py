@@ -23,6 +23,7 @@
 tag 以英文逗号分隔；--line/--rule 可多次传入，字段以 : 分隔。
 """
 import argparse
+import datetime
 import json
 import os
 import sys
@@ -160,6 +161,10 @@ def main():
     if a.category is None:
         raise SystemExit('--category 必填，可选: ' + ', '.join(CATEGORIES))
 
+    # added_at 默认当前本地时间戳（'YYYY-MM-DD HH:MM:SS'），支持 --added-at 覆盖
+    if not a.added_at:
+        a.added_at = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
     db = cf_d1.find_db()
     if not db:
         raise SystemExit('D1 不存在，先跑 create-bound')
@@ -222,6 +227,42 @@ def main():
         if ok:
             print('  rules:', ', '.join(r['dimension'] for r in rows))
     print(f'SQL 留档: {out}')
+
+    # 完整性检查：提示收录后还需补齐的数据（防"模板一样"问题再犯）
+    print('== 完整性检查 ==')
+    ok, rows, _m, _e = cf_d1.execute_sql(
+        db, f"SELECT COUNT(*) AS n FROM pe_history WHERE stock_code = '{a.code}'")
+    if ok and rows and rows[0]['n'] == 0:
+        print(f'  ⚠️  pe_history 为空 → 运行: python3 scripts/backfill_pe.py --code {a.code}')
+    else:
+        print(f'  ✅ pe_history 已就绪')
+    ok, rows, _m, _e = cf_d1.execute_sql(
+        db, f"SELECT COUNT(*) AS n FROM tracking_data WHERE stock_code = '{a.code}'")
+    if ok and rows and rows[0]['n'] == 0:
+        print(f'  ⚠️  tracking_data（9维行情）为空 → 运行: python3 scripts/backfill_tracking.py --code {a.code}')
+    else:
+        print(f'  ✅ tracking_data 已就绪')
+    if a.category in ('core', 'frontier'):
+        ok, rows, _m, _e = cf_d1.execute_sql(
+            db, f"SELECT COUNT(*) AS n FROM stock_modules WHERE stock_code = '{a.code}'")
+        if ok and rows and rows[0]['n'] == 0:
+            print(f'  ⚠️  {a.category} 类未写重点内容模块（stock_modules）→ 参照 data/seed_301165_modules.sql 补 position_check/zhongye_summary/fulfillment_track')
+        else:
+            print(f'  ✅ 重点内容模块已就绪')
+    if a.category == 'swing':
+        ok, rows, _m, _e = cf_d1.execute_sql(
+            db, f"SELECT COUNT(*) AS n FROM stock_modules WHERE stock_code = '{a.code}' AND module_key = 'swing_discipline'")
+        if ok and rows and rows[0]['n'] == 0:
+            print(f'  ⚠️  swing 类未写波段纪律模块（swing_discipline）→ 参照 data/seed_swing_discipline.sql 补')
+        else:
+            print(f'  ✅ 波段纪律模块已就绪')
+    if a.subtype == '爆发':
+        ok, rows, _m, _e = cf_d1.execute_sql(
+            db, f"SELECT COUNT(*) AS n FROM industry_lines WHERE stock_code = '{a.code}' AND lineCat = 'explosion'")
+        if ok and rows and rows[0]['n'] == 0:
+            print(f'  ⚠️  爆发型标的产线未标 lineCat=explosion → UPDATE industry_lines SET lineCat=\'explosion\' WHERE stock_code=\'{a.code}\'')
+        else:
+            print(f'  ✅ 爆发线已标 lineCat=explosion')
 
 
 if __name__ == '__main__':
