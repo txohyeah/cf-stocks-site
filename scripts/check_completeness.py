@@ -7,6 +7,7 @@
   3. swing 类无波段纪律模块（swing_discipline）
   4. subtype=爆发 但产线未标 lineCat=explosion
   5. 无产业线（industry_lines 为空）
+  6. 无暴雷检查数据（risk_checks 缺行 → 详情页 🛡️ 模块空白）
 
 用法：
   python3 scripts/check_completeness.py
@@ -39,6 +40,9 @@ def main():
         ('无产业线',
          "SELECT s.code, s.name, s.category FROM stocks s WHERE s.tracked=1 "
          "AND NOT EXISTS (SELECT 1 FROM industry_lines l WHERE l.stock_code=s.code)"),
+        ('无暴雷检查数据（详情页 🛡️ 模块空白）',
+         "SELECT s.code, s.name, s.category FROM stocks s WHERE s.tracked=1 "
+         "AND NOT EXISTS (SELECT 1 FROM risk_checks r WHERE r.stock_code=s.code)"),
     ]
 
     total_issues = 0

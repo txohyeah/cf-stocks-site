@@ -20,6 +20,8 @@
   # ④ 已存在时重收（先删旧 stocks/lines/rules 再插入）
   ... --replace
 
+收录时会自动跑一次 baolei 并把暴雷检查增量写进 risk_checks（--no-risk 可跳过）。
+
 tag 以英文逗号分隔；--line/--rule 可多次传入，字段以 : 分隔。
 """
 import argparse
@@ -149,6 +151,8 @@ def main():
     ap.add_argument('--rule', action='append', help='dimension:indicator:red:yellow:green（可多次）')
     ap.add_argument('--dry-run', action='store_true', help='只生成 SQL 不写库')
     ap.add_argument('--replace', action='store_true', help='已存在时先删旧记录再插入')
+    ap.add_argument('--no-risk', action='store_true',
+                    help='跳过收录时的暴雷检查写入（默认会自动跑 baolei 并增量写 risk_checks）')
     ap.add_argument('--out', help='留档 SQL 路径（默认 data/seed_<code>.sql）')
     a = ap.parse_args()
 
@@ -263,6 +267,22 @@ def main():
             print(f'  ⚠️  爆发型标的产线未标 lineCat=explosion → UPDATE industry_lines SET lineCat=\'explosion\' WHERE stock_code=\'{a.code}\'')
         else:
             print(f'  ✅ 爆发线已标 lineCat=explosion')
+
+    # 暴雷检查：收录时同步写入 risk_checks（增量 UPSERT，不动其他标的）
+    print('== 暴雷检查 ==')
+    if a.no_risk:
+        print('  ⏭  已跳过（--no-risk）')
+    else:
+        try:
+            import sync_baolei
+            n, _skipped, _dist = sync_baolei.sync_codes([a.code], exec_=True)
+            if n:
+                print(f'  ✅ risk_checks 已写入 {a.code}（增量，未影响其他标的）')
+            else:
+                print(f'  ⚠️  baolei 无该股年报数据（跳过）')
+        except (Exception, SystemExit) as e:  # baolei 不可用/无数据不应让收录失败
+            print(f'  ⚠️  暴雷数据写入失败（不影响本次收录）：{e}')
+            print(f'     稍后补: python3 scripts/sync_baolei.py --codes {a.code} --exec')
 
 
 if __name__ == '__main__':
