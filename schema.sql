@@ -71,7 +71,8 @@ CREATE TABLE IF NOT EXISTS industry_lines (
   weight TEXT DEFAULT '',                  -- primary/secondary
   segment TEXT DEFAULT '',
   note TEXT DEFAULT '',
-  sort_order INTEGER DEFAULT 0
+  sort_order INTEGER DEFAULT 0,
+  lineCat TEXT DEFAULT ''                  -- 行业线分类：mainline/frontier/explosion 等
 );
 CREATE INDEX IF NOT EXISTS idx_industry_lines_stock ON industry_lines(stock_code);
 
@@ -105,7 +106,9 @@ CREATE TABLE IF NOT EXISTS tracking_rules (
   red TEXT DEFAULT '',
   yellow TEXT DEFAULT '',
   green TEXT DEFAULT '',
-  sort_order INTEGER DEFAULT 0
+  sort_order INTEGER DEFAULT 0,
+  current_light TEXT DEFAULT '',           -- 最新红绿灯：red/yellow/green
+  current_note TEXT DEFAULT ''             -- 最新灯位说明
 );
 CREATE INDEX IF NOT EXISTS idx_tracking_rules_stock ON tracking_rules(stock_code);
 
