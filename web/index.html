@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stocks 研究站 · 个股列表</title>
+<link rel="stylesheet" href="/assets/style.css">
+<link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+</head>
+<body>
+<header class="top-bar">
+  <div class="brand">📈 Stocks 研究站</div>
+  <nav class="top-nav">
+    <a href="/industries">🏭 产业地图</a>
+    <a href="/articles">📖 文章</a>
+    <a href="/smart-money">🧠 聪明钱</a>
+  </nav>
+  <div class="top-right">
+    <span id="who"></span>
+    <a href="/admin" id="admin-link" hidden>用户管理</a>
+    <button id="theme-btn" class="btn-theme"></button>
+    <button id="logout-btn" class="btn-ghost">退出</button>
+  </div>
+</header>
+<main class="container">
+  <div id="pos-guide"></div>
+  <div class="toolbar">
+    <div class="tabs" id="cat-filters"></div>
+    <input type="search" id="search" placeholder="🔍 搜索名称 / 代码 / 产业…">
+  </div>
+  <div class="toolbar" style="margin-top:6px">
+    <div class="tabs" id="line-filters"></div>
+    <select id="ind-select" class="ind-select"></select>
+  </div>
+  <div class="stock-count" id="stock-count"></div>
+  <div class="card-grid" id="stock-grid"></div>
+</main>
+<script src="/assets/list.js"></script>
+<script src="/assets/theme.js"></script>
+</body>
+</html>

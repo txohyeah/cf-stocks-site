@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>用户管理 · Stocks 研究站</title>
+<link rel="stylesheet" href="/assets/style.css">
+<link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+</head>
+<body>
+<header class="top-bar">
+  <div class="brand"><a href="/">📈 Stocks 研究站</a></div>
+  <div class="top-right">
+    <span id="who"></span>
+    <button id="change-pass-btn" class="btn-ghost">修改我的口令</button>
+    <button id="theme-btn" class="btn-theme"></button>
+    <button id="logout-btn" class="btn-ghost">退出</button>
+  </div>
+</header>
+<main class="container">
+  <h2>👥 游客管理</h2>
+  <div class="panel">
+    <p class="panel-tip">游客只凭口令登录（口令即身份），把口令告诉对应的人即可。</p>
+    <form id="create-form" class="inline-form">
+      <input type="text" id="new-pass" placeholder="新游客的登录口令（≥3位）" required>
+      <button type="submit">创建游客</button>
+    </form>
+    <p id="create-msg" class="form-msg"></p>
+  </div>
+  <p class="panel-tip">游客重置口令后，该游客的所有会话会立即失效。</p>
+  <table class="table" id="user-table">
+    <thead><tr><th>ID</th><th>口令（身份）</th><th>角色</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead>
+    <tbody></tbody>
+  </table>
+</main>
+<div class="modal-backdrop" id="pass-modal" hidden>
+  <div class="modal">
+    <h3 id="pass-modal-title">修改我的口令</h3>
+    <form id="pass-form">
+      <label>当前口令<input type="password" id="cur-pass" required></label>
+      <label>新口令（≥3位）<input type="password" id="my-new-pass" required></label>
+      <p id="pass-msg" class="login-msg"></p>
+      <div class="modal-actions">
+        <button type="button" id="pass-cancel" class="btn-ghost">取消</button>
+        <button type="submit">确定</button>
+      </div>
+    </form>
+  </div>
+</div>
+<script src="/assets/admin.js"></script>
+<script src="/assets/theme.js"></script>
+</body>
+</html>

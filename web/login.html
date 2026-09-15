@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>登录 · Stocks 研究站</title>
+<link rel="stylesheet" href="/assets/style.css">
+<link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+</head>
+<body class="login-body">
+<main class="login-card">
+  <h1 id="logo">📈 Stocks 研究站</h1>
+  <p class="login-sub" id="login-sub">输入口令登录</p>
+
+  <!-- 游客登录：仅口令 -->
+  <form id="guest-form">
+    <label>口令
+      <input type="password" id="passphrase" autocomplete="current-password" required autofocus>
+    </label>
+    <p id="login-msg" class="login-msg"></p>
+    <button type="submit">登录</button>
+  </form>
+
+  <!-- 管理员登录：点 logo 5 次后显示 -->
+  <form id="admin-form" hidden>
+    <label>管理员
+      <input type="text" id="admin-username" value="admin" autocomplete="username">
+    </label>
+    <label>口令
+      <input type="password" id="admin-passphrase" autocomplete="current-password">
+    </label>
+    <button type="submit">管理员登录</button>
+  </form>
+
+  <p class="login-hint">口令由站点管理员分配。</p>
+</main>
+<script>
+let logoClicks = 0;
+const logo = document.getElementById('logo');
+const guestForm = document.getElementById('guest-form');
+const adminForm = document.getElementById('admin-form');
+const msg = document.getElementById('login-msg');
+const sub = document.getElementById('login-sub');
+
+logo.addEventListener('click', () => {
+  logoClicks += 1;
+  if (logoClicks >= 5) {
+    guestForm.hidden = true;
+    adminForm.hidden = false;
+    sub.textContent = '管理员登录';
+    document.getElementById('admin-passphrase').focus();
+  }
+});
+
+function showMsg(text) { msg.textContent = text; }
+
+guestForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  msg.textContent = '';
+  const passphrase = document.getElementById('passphrase').value;
+  try {
+    const r = await fetch('/api/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ passphrase })
+    });
+    const d = await r.json();
+    if (r.ok && d.ok) { location.href = '/'; }
+    else { msg.textContent = d.error || '登录失败'; }
+  } catch (err) { msg.textContent = '网络错误，请重试'; }
+});
+
+adminForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  msg.textContent = '';
+  const username = document.getElementById('admin-username').value.trim();
+  const passphrase = document.getElementById('admin-passphrase').value;
+  try {
+    const r = await fetch('/api/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, passphrase })
+    });
+    const d = await r.json();
+    if (r.ok && d.ok) {
+      if (d.role === 'admin') { location.href = d.role === 'admin' ? '/admin' : '/'; }
+      else { location.href = '/'; }
+    }
+    else { msg.textContent = d.error || '登录失败'; }
+  } catch (err) { msg.textContent = '网络错误，请重试'; }
+});
+</script>
+</body>
+</html>
