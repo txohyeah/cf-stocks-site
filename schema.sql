@@ -137,3 +137,20 @@ CREATE TABLE IF NOT EXISTS pe_history (
   pe_ttm REAL,
   PRIMARY KEY (stock_code, trade_date)
 );
+
+-- ★ 暴雷检查（自动排雷：stock-analytics baolei 五雷区 + 深度检查）
+-- 与人工手写的 module_key='risk'（⚠️ 风险提示）严格区分：这里是机器判定，不可手改
+CREATE TABLE IF NOT EXISTS risk_checks (
+  stock_code TEXT PRIMARY KEY,
+  rating TEXT DEFAULT '',                  -- 综合筛查评级：低 / 中 / 高（五雷区 + 深度检查取严）
+  rating_zone TEXT DEFAULT '',             -- 结构风险评级：低 / 中 / 高（仅五雷区口径）
+  r0 TEXT DEFAULT '', r0_detail TEXT DEFAULT '',   -- 雷区零 审计意见（非标前置闸门）
+  r1 TEXT DEFAULT '', r1_detail TEXT DEFAULT '',   -- 雷区一 利润结构（扣非/归母）
+  r2 TEXT DEFAULT '', r2_detail TEXT DEFAULT '',   -- 雷区二 现金流质量
+  r3 TEXT DEFAULT '', r3_detail TEXT DEFAULT '',   -- 雷区三 商誉（/归母净资产）
+  r4 TEXT DEFAULT '', r4_detail TEXT DEFAULT '',   -- 雷区四 业绩拐点
+  deep_json TEXT DEFAULT '[]',             -- 深度检查项 JSON [{name,level,detail}]
+  reasons TEXT DEFAULT '[]',               -- 触发项汇总 JSON（空 = 全绿）
+  as_of TEXT DEFAULT '',                   -- 最新报告期（数据截止）
+  checked_at TEXT DEFAULT ''               -- 检查时间
+);

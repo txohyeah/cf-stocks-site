@@ -335,7 +335,14 @@ export default {
           'SELECT name, due_date, status, note FROM catalysts WHERE stock_code = ? ORDER BY sort_order, id').bind(code).all()).results;
         const pe = (await env.DB.prepare(
           'SELECT trade_date, pe_ttm FROM pe_history WHERE stock_code = ? ORDER BY trade_date').bind(code).all()).results;
-        return json({ ok: true, stock, lines, modules: modules.map(m => ({ ...m, blocks: blocksByModule[m.id] || [] })), rules, data, catalysts, pe });
+        // 暴雷检查（表可能尚未建立 → 容错为 null，不影响详情页其他数据）
+        let risk = null;
+        try {
+          risk = await env.DB.prepare(
+            'SELECT rating, rating_zone, r0, r0_detail, r1, r1_detail, r2, r2_detail, r3, r3_detail, r4, r4_detail, ' +
+            'deep_json, reasons, as_of, checked_at FROM risk_checks WHERE stock_code = ?').bind(code).first();
+        } catch (e) { risk = null; }
+        return json({ ok: true, stock, lines, modules: modules.map(m => ({ ...m, blocks: blocksByModule[m.id] || [] })), rules, data, catalysts, pe, risk: risk || null });
       }
       if (p === '/api/industries' && method === 'GET') return apiIndustries(env);
       const am_ind = p.match(/^\/api\/industry\/([^\/]+)$/);
