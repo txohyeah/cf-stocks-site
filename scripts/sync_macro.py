@@ -285,19 +285,22 @@ def condition_rows(conn, now):
         add('fed_direction', '美联储方向（降息 vs 加息）',
             '文章原设定：预防式降息通道延续；反之为"跳出降息框架"进入加息通道',
             f'10Y 美债 {tycr[2]:.2f}%、2Y {tycr[1]:.2f}%（{tycr[0]}），年内 10Y 从 {ymin:.2f} 升到 {ymax:.2f}；'
-            + (fed.get('text', '政策利率口径见手工项') ),
-            'bad', '已偏离（降息通道已停）',
+            + (fed.get('text', '政策利率口径见手工项')),
+            # kind/status/note 自 2026-09-16 起从 macro_manual.json 读（此前是写死在这里的）——
+            # 加息落地后只改 JSON 即可，不必动代码；kind='hike' 会驱动置顶「当前定性」换挡
+            fed.get('kind', 'bad'), fed.get('status', '已偏离（降息通道已停）'),
             f'tushare us_tycr（每日自动）＋{fed.get("source", "公开新闻")}', 'auto',
-            '美债收益率单边上行＝市场在定价更高利率：与"降息"定性直接冲突', 2)
+            fed.get('note', '美债收益率单边上行＝市场在定价更高利率：与"降息"定性直接冲突'), 2)
 
-    # ③ 会议定价（手工项：库内无利率期货数据源）
+    # ③ 会议定价（手工项：库内无利率期货数据源；决议公布后改 macro_manual.json 的 fed_meeting）
     meeting = manual.get('fed_meeting', {})
     if meeting:
         add('fed_meeting_odds', '本次会议定价',
             '9 月 FOMC 加息 / 降息 / 按兵不动',
-            meeting.get('text', ''), 'warn', '会前定价（决议前）',
+            meeting.get('text', ''),
+            meeting.get('kind', 'warn'), meeting.get('status', '会前定价（决议前）'),
             meeting.get('source', '公开新闻（手工录入）'), 'manual',
-            f'手工项，as_of={meeting.get("as_of", "—")}；决议公布后需更新', 3)
+            meeting.get('note', f'手工项，as_of={meeting.get("as_of", "—")}；决议公布后需更新'), 3)
 
     # ④ 通胀（预防式降息的前提是"通胀可控"）
     cpi = manual.get('us_cpi', {})
@@ -379,7 +382,10 @@ def regime_text(conn, cond, now):
             break
     fed = st.get('fed_direction')
     fed_kind = fed[4] if fed else ''
-    if streak >= OIL_STREAK_TARGET:
+    if fed_kind == 'hike':
+        # 加息真落地了 → 不再等油价条件（场景 B 是"降息暂停 → 转加息"的代理，真加息比代理更直接）
+        title = '已进入加息通道（加息已落地，不再等油价条件）'
+    elif streak >= OIL_STREAK_TARGET:
         title = '框架已切换：场景 B 成立（降息暂停 → 转加息通道）'
     elif fed_kind == 'bad':
         title = '已跳出降息框架（降息通道已停，转加息定价中）'

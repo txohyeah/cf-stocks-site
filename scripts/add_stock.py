@@ -36,6 +36,8 @@ import cf_d1
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # projects/stocks-site
 
 CATEGORIES = ('core', 'frontier', 'swing', 'dividend', 'sunset')
+BUY_RANGE_TYPES = ('pe', 'pe-fwd', 'pe-core', 'pb', 'ps', 'price')
+LINE_CATS = ('mainline', 'frontier', 'explosion', 'swing', 'dividend', 'sunset')
 
 
 def q(s: str) -> str:
@@ -94,15 +96,30 @@ def check_codes(codes):
 def build_sql(a):
     lines_sql = None
     line_parts = split_items(a.line, 5, 'line')
+    line_cats = list(getattr(a, 'line_cat', None) or [])
+    if line_cats and len(line_cats) != len(line_parts or []):
+        raise SystemExit(
+            f'--line-cat 数量({len(line_cats)}) 与 --line 数量({len(line_parts or [])}) 不一致，'
+            '请按 --line 顺序一一对应')
     if line_parts:
-        vals = ', '.join(
-            f"('{a.code}', '{q(p[0])}', '{q(p[1])}', '{q(p[2])}', '{q(p[3])}', '{q(p[4])}', {i})"
-            for i, p in enumerate(line_parts)
-        )
-        lines_sql = (
-            "INSERT INTO industry_lines (stock_code, line_id, position, weight, segment, note, sort_order) VALUES "
-            + vals
-        )
+        if line_cats:
+            vals = ', '.join(
+                f"('{a.code}', '{q(p[0])}', '{q(p[1])}', '{q(p[2])}', '{q(line_cats[i])}', '{q(p[3])}', '{q(p[4])}', {i})"
+                for i, p in enumerate(line_parts)
+            )
+            lines_sql = (
+                "INSERT INTO industry_lines (stock_code, line_id, position, weight, lineCat, segment, note, sort_order) VALUES "
+                + vals
+            )
+        else:
+            vals = ', '.join(
+                f"('{a.code}', '{q(p[0])}', '{q(p[1])}', '{q(p[2])}', '{q(p[3])}', '{q(p[4])}', {i})"
+                for i, p in enumerate(line_parts)
+            )
+            lines_sql = (
+                "INSERT INTO industry_lines (stock_code, line_id, position, weight, segment, note, sort_order) VALUES "
+                + vals
+            )
 
     rules_sql = None
     rule_parts = split_items(a.rule, 5, 'rule')
@@ -121,7 +138,7 @@ def build_sql(a):
         f"('{a.code}', '{q(a.name)}', '{q(a.sector)}', '{a.category}', '{q(a.subtype or '')}', "
         f"'{q(parse_tags(a.tags))}', '{q(a.desc or '')}', "
         f"{a.pe if a.pe is not None else 'NULL'}, '{a.pe_date or ''}', "
-        f"'{parse_buy_range(a.buy_range)}', 'pe', {1 if a.tracked else 0}, "
+        f"'{parse_buy_range(a.buy_range)}', '{a.buy_range_type}', {1 if a.tracked else 0}, "
         f"'{a.added_at or ''}')"
     )
     parts = [stocks_sql]
@@ -145,9 +162,13 @@ def main():
     ap.add_argument('--pe', type=float)
     ap.add_argument('--pe-date', default='')
     ap.add_argument('--buy-range', default='')
+    ap.add_argument('--buy-range-type', default='pe', choices=BUY_RANGE_TYPES,
+                    help='买点区间口径（默认 pe）；亏损/PE 失效用 pb 或 ps，绝对价用 price，前瞻用 pe-fwd，核心仓用 pe-core')
     ap.add_argument('--tracked', type=int, default=1)
     ap.add_argument('--added-at', default='')
     ap.add_argument('--line', action='append', help='line_id:position:weight:segment:note（可多次）')
+    ap.add_argument('--line-cat', action='append', choices=LINE_CATS,
+                    help='产业线分类 lineCat（mainline/frontier/explosion/swing/dividend/sunset），按 --line 顺序一一对应（可多次；不传则留空）')
     ap.add_argument('--rule', action='append', help='dimension:indicator:red:yellow:green（可多次）')
     ap.add_argument('--dry-run', action='store_true', help='只生成 SQL 不写库')
     ap.add_argument('--replace', action='store_true', help='已存在时先删旧记录再插入')
@@ -215,16 +236,19 @@ def main():
 
     # 验证
     ok, rows, _m, err = cf_d1.execute_sql(
-        db, f"SELECT code, name, category, pe_current, pe_date FROM stocks WHERE code = '{a.code}'")
+        db, f"SELECT code, name, category, pe_current, pe_date, ttm_buy_range, buy_range_type FROM stocks WHERE code = '{a.code}'")
     print('== 验证 ==')
     if ok and rows:
         r = rows[0]
-        print(f'  stocks: {r["code"]} {r["name"]} [{r["category"]}] PE={r["pe_current"]} ({r["pe_date"]})')
+        print(f'  stocks: {r["code"]} {r["name"]} [{r["category"]}] PE={r["pe_current"]} ({r["pe_date"]}) '
+              f'买点={r["ttm_buy_range"]}@{r["buy_range_type"]}')
     if line_parts:
         ok, rows, _m, err = cf_d1.execute_sql(
-            db, f"SELECT line_id, position, weight FROM industry_lines WHERE stock_code = '{a.code}' ORDER BY sort_order")
+            db, f"SELECT line_id, position, weight, lineCat FROM industry_lines WHERE stock_code = '{a.code}' ORDER BY sort_order")
         if ok:
-            print('  lines:', ', '.join(f'{r["line_id"]}({r["position"]}/{r["weight"]})' for r in rows))
+            print('  lines:', ', '.join(
+                f'{r["line_id"]}({r["position"]}/{r["weight"]}'
+                f'{"/" + r["lineCat"] if r["lineCat"] else ""})' for r in rows))
     if rule_parts:
         ok, rows, _m, err = cf_d1.execute_sql(
             db, f"SELECT dimension FROM tracking_rules WHERE stock_code = '{a.code}' ORDER BY sort_order")
@@ -264,9 +288,17 @@ def main():
         ok, rows, _m, _e = cf_d1.execute_sql(
             db, f"SELECT COUNT(*) AS n FROM industry_lines WHERE stock_code = '{a.code}' AND lineCat = 'explosion'")
         if ok and rows and rows[0]['n'] == 0:
-            print(f'  ⚠️  爆发型标的产线未标 lineCat=explosion → UPDATE industry_lines SET lineCat=\'explosion\' WHERE stock_code=\'{a.code}\'')
+            print(f'  ⚠️  爆发型标的产线未标 lineCat=explosion → 重收时加 --line-cat explosion'
+                  f'（或 UPDATE industry_lines SET lineCat=\'explosion\' WHERE stock_code=\'{a.code}\'）')
         else:
             print(f'  ✅ 爆发线已标 lineCat=explosion')
+    if line_parts and not a.line_cat:
+        ok, rows, _m, _e = cf_d1.execute_sql(
+            db, f"SELECT COUNT(*) AS n FROM industry_lines WHERE stock_code = '{a.code}' AND lineCat != ''")
+        if ok and rows and rows[0]['n'] == 0:
+            print(f'  ⚠️  产线未标 lineCat → 重收时加 --line-cat（core 主脉常标 mainline，前瞻卡位标 frontier）')
+        else:
+            print(f'  ✅ 产线 lineCat 已标')
 
     # 暴雷检查：收录时同步写入 risk_checks（增量 UPSERT，不动其他标的）
     print('== 暴雷检查 ==')

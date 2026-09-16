@@ -229,7 +229,7 @@ function renderMoney(d) {
 }
 
 /* ---------- 🧭 框架条件变量体检（文章《产业投资框架》第 1 节定义） ---------- */
-const COND_ICON = { ok: '✅', warn: '⏳', bad: '❌', gap: '⛔' };
+const COND_ICON = { ok: '✅', warn: '⏳', bad: '❌', gap: '⛔', hike: '🔺' };
 function renderFramework(d) {
   const rows = d.conditions || [];
   const dly = d.daily || [];
