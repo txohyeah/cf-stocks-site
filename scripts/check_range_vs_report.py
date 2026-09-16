@@ -127,10 +127,24 @@ def main():
         fin.setdefault(ts, {}).setdefault(end, (ni / 1e8, None))
 
     val_text = {}
+    # 已作废的旧地基记录（如长电「旧地基作废：原按 2026E 33-38 亿」）会被下面的正则
+    # 当成当前预测，造成永久误报 —— 含这些标记的块一律跳过
+    DEAD = ('作废', '原按', '旧地基', '已废弃', '此前按', '曾按')
     for b in blocks:
-        val_text.setdefault(b['stock_code'], []).append(b['data_json'])
+        t = b['data_json'] or ''
+        if any(k in t for k in DEAD):
+            continue
+        val_text.setdefault(b['stock_code'], []).append(t)
 
-    A, B, C, noquote = [], [], [], []
+    A, A2, B, C, noquote = [], [], [], [], []
+    # 券商一致预期缓存（由 prep_range_data.py 维护，见 data/cache/rc_pool.json）
+    rc_cache = {}
+    _p = os.path.join(HERE, '..', 'data', 'cache', 'rc_pool.json')
+    if os.path.exists(_p):
+        try:
+            rc_cache = json.load(open(_p))
+        except Exception:
+            pass
     for s in stocks:
         code, name, typ = s['code'], s['name'], (s['buy_range_type'] or 'pe')
         rg = (s['ttm_buy_range'] or '').strip()
@@ -173,10 +187,21 @@ def main():
                     need = hi / act
                     rel = need / sr[1]
                     if rel > 1.15:
-                        A.append(dict(code=code, name=name, period=le, actual=round(act, 2),
-                                      forecast_hi=hi, need=round(need, 2),
-                                      hist='%.2f~%.2f' % sr, over=round((rel - 1) * 100),
-                                      evidence=cand[0][3]))
+                        # 用券商一致预期校准：模块预测 ≈ 券商预期 → 只是下半年集中确认收入，
+                        # 不是地基塌了（2026-09-16 实测：A 类 11 只里 7 只是这类误报）
+                        rcy = rc_cache.get(code, {}).get(y)
+                        med = None
+                        if rcy:
+                            sv = sorted(rcy)
+                            med = sv[len(sv) // 2]
+                        dev = (hi - med) / med if med else None
+                        item = dict(code=code, name=name, period=le, actual=round(act, 2),
+                                    forecast_hi=hi, need=round(need, 2),
+                                    hist='%.2f~%.2f' % sr, over=round((rel - 1) * 100),
+                                    rc_med=med, dev=(round(dev * 100, 1) if dev is not None else None),
+                                    evidence=cand[0][3])
+                        # 无券商对照时保守保留在 A 类，避免漏掉真问题
+                        (A2 if (dev is not None and dev <= 0.25) else A).append(item)
 
         if not m or not parsed:
             if not m:
@@ -203,20 +228,28 @@ def main():
                 C.append(dict(code=code, name=name, typ=typ, rg=rg, cur=round(cur_v, 2),
                               pos='现价高于上沿', gap=round(-d_hi * 100, 1)))
 
-    A.sort(key=lambda x: -x['over'])
+    A.sort(key=lambda x: -(x['dev'] if x['dev'] is not None else x['over']))
+    A2.sort(key=lambda x: -x['over'])
     if args.json:
-        print(json.dumps(dict(as_of=D, trade_date=D, A=A, B=B, C=C,
+        print(json.dumps(dict(as_of=D, trade_date=D, A=A, A2=A2, B=B, C=C,
                               no_quote=noquote, n_stocks=len(stocks)), ensure_ascii=False, indent=2))
     elif A or B or not args.quiet:
         print('区间复核报告（行情日 %s，池内 %d 只）' % (D, len(stocks)))
         print()
-        print('=== A 类：估值地基与最新报表矛盾（需重算区间）%d 只 ===' % len(A))
+        print('=== A 类：估值地基与最新报表矛盾【真问题，需重算区间】%d 只 ===' % len(A))
         for x in A:
-            lv = '🔴' if x['over'] >= 60 else ('🟠' if x['over'] >= 30 else '🟡')
-            print(' %s %-9s %-6s %s 实际 %.2f 亿 | 模块预测上限 %.1f 亿 → 需 全年/该期 %.2f 倍'
-                  '（该股历史 %s）超限 %d%%' % (lv, x['code'], x['name'], x['period'],
-                                              x['actual'], x['forecast_hi'], x['need'],
-                                              x['hist'], x['over']))
+            dev = ('券商 %sE %.2f 亿，模块高 %+.0f%%' % (x['period'][:4], x['rc_med'], x['dev'])
+                   if x['rc_med'] else '无券商对照')
+            print(' 🔴 %-9s %-6s %s 实际 %.2f 亿 | 模块预测上限 %.1f 亿 → 需全年/该期 %.2f 倍'
+                  '（历史 %s）| %s' % (x['code'], x['name'], x['period'], x['actual'],
+                                     x['forecast_hi'], x['need'], x['hist'], dev))
+        print()
+        print('=== A2 类：季节性观察【疑似误报，模块预测与券商一致，通常无需改】%d 只 ===' % len(A2))
+        for x in A2:
+            print(' ⚪ %-9s %-6s 实际 %.2f 亿 | 模块 %.1f 亿 ≈ 券商 %sE %.2f 亿'
+                  '（下半年集中确认收入所致，非地基问题）'
+                  % (x['code'], x['name'], x['actual'], x['forecast_hi'],
+                     x['period'][:4], x['rc_med']))
         print()
         print('=== B 类：区间数据异常 %d 只 ===' % len(B))
         for x in B:
