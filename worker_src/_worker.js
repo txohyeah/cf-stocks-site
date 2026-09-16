@@ -254,14 +254,20 @@ async function apiMacro(env) {
     'SELECT month, indicator, value, unit FROM macro_series WHERE month >= ? ORDER BY month'
   ).bind(seriesFrom).all()).results;
 
-  // 4) 日频序列（Shibor/两融/北向/布伦特/WTI/美债10Y/美债2Y/离岸人民币）
-  //    每个指标只取最近 260 个交易日 —— 页面最长的图是 250 点，多取无益且会撑大响应体
-  const daily = (await env.DB.prepare(
-    'SELECT trade_date, indicator, value FROM (' +
-    '  SELECT trade_date, indicator, value, ROW_NUMBER() OVER (PARTITION BY indicator ORDER BY trade_date DESC) rn' +
-    '  FROM macro_daily WHERE trade_date >= ?' +
-    ') WHERE rn <= 260 ORDER BY trade_date'
-  ).bind(yearAgo).all()).results;
+  // 4) 日频序列（8 个指标，各取最近 260 个交易日 —— 页面最长的图是 250 点，多取无益）
+  //    ⚠️ 2026-09-16 改：不要改回 ROW_NUMBER 窗口函数。D1 免费版按「扫过的行」计读额度，
+  //    窗口函数在 400 天窗口上实测一次读 16,537 行（加索引反而更差，它会同时扫索引+表）；
+  //    拆成每指标一条 LIMIT 260、走 idx_macro_daily_ind_date，实测只读 260×8 = 2,080 行（省 87%）。
+  //    名单需与 scripts/sync_macro.py 的 MACRO_DAILY_ORDER 和 assets/macro.js 的取值保持三处一致。
+  const DAILY_INDS = ['Shibor隔夜', '两融余额', '北向净买', '布伦特原油', 'WTI原油', '美债10Y', '美债2Y', '离岸人民币'];
+  const daily = [];
+  for (const ind of DAILY_INDS) {
+    const part = (await env.DB.prepare(
+      'SELECT trade_date, indicator, value FROM macro_daily WHERE indicator = ? ORDER BY trade_date DESC LIMIT 260'
+    ).bind(ind).all()).results;
+    for (let i = part.length - 1; i >= 0; i--) daily.push(part[i]);   // DESC 取 → 转时间升序
+  }
+  daily.sort((a, b) => (String(a.trade_date) < String(b.trade_date) ? -1 : (String(a.trade_date) > String(b.trade_date) ? 1 : 0)));
 
   // 5) 未来发布日程（值为空 = 尚未公布）
   const upcoming = (await env.DB.prepare(

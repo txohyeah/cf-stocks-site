@@ -242,6 +242,9 @@ CREATE TABLE IF NOT EXISTS macro_daily (
   PRIMARY KEY (trade_date, indicator)
 );
 CREATE INDEX IF NOT EXISTS idx_macro_daily_date ON macro_daily(trade_date);
+-- 日频按「指标 + 日期」取最近 N 条（/api/macro 的核心查询）——
+-- 2026-09-16 加：D1 免费版按「扫过的行」计读额，没这条索引时 worker 拆条每条都全表扫（读完 16k+）。
+CREATE INDEX IF NOT EXISTS idx_macro_daily_ind_date ON macro_daily(indicator, trade_date);
 
 -- ★ 宏观：框架条件变量体检（2026-09-16 新增）
 -- 来源 = 文章 /article/investment-framework 第 1 节定义的条件变量 + 宏观页自测补充项，

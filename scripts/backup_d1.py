@@ -19,12 +19,18 @@ import sqlite3
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from cf_d1 import execute_sql, find_db
 
-# 全部 13 张表
+# 全部 19 张表
+# ⚠️ 2026-09-16 补：原来漏了 6 张 macro_* 表。其中 macro_notes 是模型/人工写的
+#    解读笔记 + 「当前宏观定性」历史，**丢了不可再生**（macro_calendar / macro_series /
+#    macro_daily 还能从 stock-analytics sqlite 重灌，但笔记和人工定性不能）。
+#    新增表时必须同步加到这里，否则备份静默漏表（本脚本不会报错）。
 TABLES = [
     'users', 'sessions', 'articles', 'stocks', 'industries',
     'industry_lines', 'stock_modules', 'module_blocks',
     'tracking_rules', 'tracking_data', 'catalysts', 'pe_history',
     'risk_checks',
+    'macro_calendar', 'macro_series', 'macro_daily',
+    'macro_conditions', 'macro_industry_state', 'macro_notes',
 ]
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # projects/stocks-site
@@ -38,6 +44,22 @@ def esc(v):
     if isinstance(v, (int, float)):
         return str(v)
     return "'" + str(v).replace("'", "''") + "'"
+
+
+def check_coverage(db):
+    """防漏表守卫：D1 里的业务表必须都在 TABLES 里（2026-09-16 因漏 6 张 macro_* 而加）。
+
+    D1/CF 自建的系统表（sqlite_sequence、_cf_KV）不算业务表，跳过。
+    """
+    ok, rows, _m, err = execute_sql(
+        db, "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+    if not ok:
+        return None, f'读表清单失败: {err}'
+    have = {r['name'] for r in rows}
+    skip = {'sqlite_sequence', '_cf_KV'}
+    missing = sorted(have - set(TABLES) - skip)
+    extra = sorted(set(TABLES) - have)
+    return (missing, extra), None
 
 
 def fetch_table(db, t):
@@ -111,6 +133,20 @@ def main():
 
     os.makedirs(BACKUP_DIR, exist_ok=True)
     db = find_db()
+
+    # 0. 防漏表守卫：业务表必须全部在 TABLES 里，漏了就拒绝备份（宁可报警不可静默漏）
+    cov, cerr = check_coverage(db)
+    if cerr:
+        print(f"[WARN] 防漏表检查跳过：{cerr}")
+    else:
+        missing, extra = cov
+        if missing:
+            print(f"[FAIL] 以下 D1 业务表不在备份清单里（漏备份）: {missing}")
+            print(f"[FIX] 把它们加进 scripts/backup_d1.py 的 TABLES 后重跑")
+            sys.exit(1)
+        if extra:
+            print(f"[WARN] 清单里的这些表在 D1 上不存在（可能已改名/删除）: {extra}")
+        print(f"[OK] 表覆盖检查通过：{len(TABLES)} 张表全部存在")
 
     # 1. 导出
     today = datetime.datetime.now().strftime('%Y%m%d')
