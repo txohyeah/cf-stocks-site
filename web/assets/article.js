@@ -110,6 +110,8 @@ function inline(s) {
   t = t.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<i>$2</i>');
   // 站内锚点 [text](#id)（目录/交叉引用）
   t = t.replace(/\[([^\]]+)\]\(#([^)]+)\)/g, '<a href="#$2">$1</a>');
+  // 站内页面链接 [text](/path)（如文章里指到 /macro、/industries 等；2026-09-16 补，此前会原样显示成文本）
+  t = t.replace(/\[([^\]]+)\]\((\/[^)\s]*)\)/g, '<a href="$2">$1</a>');
   // 链接 [text](url)
   t = t.replace(/\[([^\]]+)\]\((https?:[^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
   return t;
