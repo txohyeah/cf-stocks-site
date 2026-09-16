@@ -198,7 +198,7 @@ CREATE INDEX IF NOT EXISTS idx_macro_cal_date ON macro_calendar(date);
 -- 写笔记的工具：scripts/macro_note.py（check 判断今天有没有新发布 / save 落库）
 CREATE TABLE IF NOT EXISTS macro_notes (
   note_date TEXT NOT NULL,                 -- 归属日期 YYYYMMDD（= 数据发布日或周记日）
-  kind TEXT NOT NULL DEFAULT 'release',    -- release=数据发布解读 / weekly=周记
+  kind TEXT NOT NULL DEFAULT 'release',    -- release=数据发布解读 / weekly=周记 / regime=当前宏观定性（只在定性变化时新增，规则层写）
   created_at TEXT NOT NULL,                -- 撰写时间（页面显示"最后更新于"）
   title TEXT DEFAULT '',
   body_md TEXT NOT NULL,                   -- 正文（轻量 markdown：段落 / - 列表 / **加粗**）

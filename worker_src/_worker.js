@@ -278,13 +278,23 @@ async function apiMacro(env) {
   } catch (e) { conditions = []; }
 
   // 7) 解读笔记（模型/人工撰写，带时间戳；与每天自动刷新的体检卡是两层，表可能尚未建立 → 容错）
+  //    kind='regime' 的行是"当前定性"的历史，单独走下面 7b，不混进笔记列表
   let notes = [];
   try {
     notes = (await env.DB.prepare(
       'SELECT note_date, kind, created_at, title, body_md, covered, source FROM macro_notes ' +
-      'ORDER BY note_date DESC, kind LIMIT 5'
+      "WHERE kind <> 'regime' ORDER BY note_date DESC, kind LIMIT 5"
     ).all()).results;
   } catch (e) { notes = []; }
+
+  // 7b) 当前宏观定性（规则层：sync_macro.py 只在定性变化时留一条；承接原文章 §1.3「当前判断」）
+  let regime = [];
+  try {
+    regime = (await env.DB.prepare(
+      'SELECT note_date, kind, created_at, title, body_md, as_of, source FROM macro_notes ' +
+      "WHERE kind = 'regime' ORDER BY note_date DESC LIMIT 12"
+    ).all()).results;
+  } catch (e) { regime = []; }
 
   // 8) 宏观 → 产业 传导（规则表 hand-written，每次同步重算；表可能尚未建立 → 容错）
   let industries = [];
@@ -302,7 +312,7 @@ async function apiMacro(env) {
   ).first()) || {};
 
   return json({ ok: true, today, as_of: asOf, latest, surprises, series, daily, upcoming, conditions,
-    notes, industries });
+    notes, regime, industries });
 }
 
 // ---------- admin: 仅 admin，仅游客维护 ----------

@@ -356,10 +356,106 @@ def condition_rows(conn, now):
     return rows
 
 
+# ---- 当前宏观定性（2026-09-16 新增）----
+# 承接原文章《产业投资框架》§1.3「当前判断」——文章从此只讲方法论、不随行情改写，
+# "现在处在哪一层"由本规则层每天重算，**只在定性变化时**往 macro_notes(kind='regime') 留一条历史。
+REGIME_CHECKS = ['oil_30d_95', 'fed_direction', 'fed_meeting_odds', 'inflation',
+                 'northbound', 'cnh', 'domestic_demand']
+
+
+def regime_text(conn, cond, now):
+    """由体检条件推「当前定性」→ (定性一句话, 变更依据快照 md, 数据口径日期)。
+
+    ⚠️ 定性文本必须**在同一档位内保持稳定**（不写数字/日期），否则每次同步都会被判成"变了"而刷记录。
+    数字放"依据快照"里（记的是变更当时的快照）；日常的实时数字看体检卡。
+    """
+    st = {r[0]: r for r in cond}          # cond_key -> (key, title, target, current, kind, status, source, source_kind, note, order, updated)
+    oil = conn.execute("SELECT date, close FROM oil_global WHERE symbol='BRENT' ORDER BY date DESC").fetchall()
+    streak = 0
+    for _d, c in oil:
+        if c is not None and float(c) >= OIL_LEVEL:
+            streak += 1
+        else:
+            break
+    fed = st.get('fed_direction')
+    fed_kind = fed[4] if fed else ''
+    if streak >= OIL_STREAK_TARGET:
+        title = '框架已切换：场景 B 成立（降息暂停 → 转加息通道）'
+    elif fed_kind == 'bad':
+        title = '已跳出降息框架（降息通道已停，转加息定价中）'
+    elif fed_kind == 'ok':
+        title = '预防式降息通道延续（场景 A）'
+    else:
+        title = '降息通道尚在，但有条件已偏离'
+
+    oil_txt = (f'布伦特 {oil[0][1]:.2f} 美元（{oil[0][0]}），连续 ≥{OIL_LEVEL:.0f} 已 '
+               f'{streak}/{OIL_STREAK_TARGET} 个交易日') if oil else '油数据缺失'
+    lines = [f'**定量依据（{now[:10]} 快照）**：{oil_txt}。', '']
+    for k in REGIME_CHECKS:
+        r = st.get(k)
+        if r:
+            lines.append(f'- **{r[1]}**：{r[5]}')
+    lines += ['', '**口径**：定性由框架条件自动判定（scripts/sync_macro.py），只在变化时留档；'
+                  '逐条条件的每日实测见下方「框架条件变量体检」，'
+                  '每次数据发布后的分析结论见「解读笔记」。']
+    # as_of 统一成 YYYYMMDD（与页面上其它口径一致；oil_global 的 date 是 ISO 带横线）
+    as_of = (oil[0][0] if oil else now[:10]).replace('-', '')
+    return title, '\n'.join(lines), as_of
+
+
+def sync_regime(title, body, as_of, now, out_path=None):
+    """只在**定性文本变化**时新增一条 macro_notes(kind='regime')；幂等。
+
+    尊重人工：若最新一条 regime 是 source='human'，规则层不再覆盖（人工说了算）；
+    source='manual' 表示历史归档快照，不阻挡规则层写入。
+    """
+    import cf_d1
+    db = cf_d1.find_db()
+    if not db:
+        raise SystemExit('D1 不存在')
+
+    ok, rows, _m, err = cf_d1.execute_sql(
+        db, "SELECT note_date, title, source FROM macro_notes WHERE kind = 'regime' "
+            'ORDER BY note_date DESC LIMIT 1')
+    if not ok:
+        print('[定性] 读最新条目失败：' + json.dumps(err, ensure_ascii=False)[:200])
+        return
+    latest = rows[0] if rows else None
+    if latest and latest['title'] == title:
+        print(f"[定性] 未变（{title}，自 {latest['note_date']}）→ 不写新记录")
+        return
+    if latest and latest['source'] == 'human':
+        print(f"[定性] 最新一条是人工撰写（{latest['note_date']}），规则层不覆盖 → 不写")
+        return
+
+    note_date = now[:10].replace('-', '')
+    row = [(note_date, 'regime', now, title, body, '', as_of, 'auto')]
+    stmts = insert_stmts('macro_notes', NOTE_COLS, row, ['note_date', 'kind'])
+    if out_path:
+        with open(out_path, 'a', encoding='utf-8') as f:
+            f.write('\n-- 当前宏观定性（只在定性变化时新增）\n')
+            f.write(';\n'.join(stmts) + ';\n')
+    for i, stmt in enumerate(stmts, 1):
+        ok, _r, meta, err = cf_d1.execute_sql(db, stmt)
+        if not ok:
+            print(f'[定性FAIL] ' + json.dumps(err, ensure_ascii=False)[:300])
+            return
+    ok, rows, _m, err = cf_d1.execute_sql(
+        db, "SELECT note_date, title, source, length(body_md) n FROM macro_notes "
+            "WHERE kind = 'regime' ORDER BY note_date DESC")
+    print(f"[定性] 写出新记录 → {title}")
+    for r in (rows or []):
+        print('   ', json.dumps(r, ensure_ascii=False))
+
+
 # ---- 宏观 → 产业 传导（2026-09-16 新增；规则表在 scripts/macro_industry.json，改规则不用改代码）----
 IND_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'macro_industry.json')
 IND_COLS = ['industry_id', 'name', 'link', 'state_kind', 'state_text',
             'favorable', 'unfavorable', 'drivers_json', 'updated_at']
+
+# macro_notes（解读笔记 + 当前定性）：kind='regime' 的行是"当前定性"的历史，
+# 由 sync_regime() 只在定性变化时新增；其余 kind（release/weekly）由 agent cron 写。
+NOTE_COLS = ['note_date', 'kind', 'created_at', 'title', 'body_md', 'covered', 'as_of', 'source']
 
 # 发布日历类指标的"阈值单位"：JSON 里的阈值按这个口径写（社融用万亿、信贷用亿、比率用原值）
 CAL_SCALE = {
@@ -521,6 +617,10 @@ def verify(db):
          'SUM(ref_avg5 IS NOT NULL) has_avg5 FROM macro_calendar WHERE value IS NOT NULL'),
         ('macro_industry_state 产业数与状态分布',
          'SELECT COUNT(*) n, GROUP_CONCAT(state_text) kinds FROM macro_industry_state'),
+        ('当前宏观定性（macro_notes kind=regime 条数与最新一条）',
+         "SELECT COUNT(*) n, MAX(note_date) latest FROM macro_notes WHERE kind = 'regime'"),
+        ('最新定性文本',
+         "SELECT note_date, title, source FROM macro_notes WHERE kind = 'regime' ORDER BY note_date DESC LIMIT 1"),
         ('最新社融的参照系（应：去年同期 + 分位 + 历年同期均值）',
          "SELECT date, pct_rank, pct_rank_n FROM macro_calendar WHERE event LIKE '中国社会融资规模%' "
          'AND value IS NOT NULL ORDER BY date DESC LIMIT 1'),
@@ -548,6 +648,7 @@ def main():
     now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     cond = condition_rows(conn, now)   # 条件变量体检（依赖 now 作 updated_at）
     ind = industry_rows(conn, now)     # 宏观 → 产业 传导（规则表 scripts/macro_industry.json）
+    regime = regime_text(conn, cond, now)   # 当前定性（要读 analytics 连接 → 必须在 close 之前算）
     conn.close()
 
     header = [f'-- 宏观数据（sync_macro.py 生成 {now}）',
@@ -567,11 +668,13 @@ def main():
     print(f'SQL 已写出：{args.out}（{len(stmts)} 条语句）')
     print(f'  日历 {len(cal)} 行（其中未来排期 {sum(1 for r in cal if r[0] > now[:10].replace("-", ""))} 行）'
           f' ｜ 序列 {len(series)} 行 ｜ 日频 {len(daily)} 行（since={since}）｜ 条件变量 {len(cond)} 条')
+    print(f'  当前定性：{regime[0]}')
 
     if args.exec:
         db, total = exec_stmts(stmts)
         print(f'已写入 D1，累计 rows_changed={total}（⚠️ D1 对 upsert 恒回报 0，以回读为准）')
-        verify(db)
+        sync_regime(*regime, now, args.out)   # 定性层：只在文本变化时新增一条历史
+        verify(db)                            # 回读核对放最后，让"当前定性"那一项反映本次结果
 
 
 if __name__ == '__main__':

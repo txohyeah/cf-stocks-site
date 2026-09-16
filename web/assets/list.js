@@ -158,8 +158,17 @@ async function renderCards() {
     const catLabel = (CAT_EMOJI[s.category] ? CAT_EMOJI[s.category] + ' ' : '') +
       ((CATS.find(x => x[0] === s.category) || [])[1] || s.category || '—');
     const catCls = s.category ? 'cat-' + s.category : '';
+    // 区间口径由 buy_range_type 决定：price=元，pe/pe-fwd/pe-core/pb/ps=倍数
     const buyRange = (() => {
-      try { const a = JSON.parse(s.ttm_buy_range || '[]'); return a.length ? a[0] + '~' + a[1] + 'x' : '—'; } catch (e) { return '—'; }
+      try {
+        const a = JSON.parse(s.ttm_buy_range || '[]');
+        if (!Array.isArray(a) || a.length !== 2 || !(Number(a[0]) || Number(a[1]))) return { text: '—', tip: '' };
+        const unit = s.buy_range_type === 'price' ? '元' : 'x';
+        return {
+          text: Number(a[0]) + '~' + Number(a[1]) + unit,
+          tip: RANGE_TIP[s.buy_range_type] || '合理估值区间'
+        };
+      } catch (e) { return { text: '—', tip: '' }; }
     })();
     const lineBadges = (s.lines || []).map(l => l.lineCat).filter(Boolean);
     const lineStr = ['mainline', 'frontier', 'explosion', 'swing', 'dividend', 'sunset']
@@ -174,7 +183,7 @@ async function renderCards() {
       <div class="card-desc">${esc(s.desc || '')}</div>
       <div class="card-meta">
         <span>PE(TTM) <b>${s.pe_current != null ? Number(s.pe_current).toFixed(2) : '—'}</b></span>
-        <span>买入区间 <b>${buyRange}</b></span>
+        <span title="${esc(buyRange.tip)}">合理区间 <b>${buyRange.text}</b></span>
       </div>
       <div class="card-badges">${fmtTags(s.tags).slice(0, 5).map(t => '<span class="badge">' + esc(t) + '</span>').join('')}</div>`;
     card.onclick = () => { location.href = '/stocks/' + s.code; };
@@ -183,6 +192,16 @@ async function renderCards() {
 }
 
 const LINECAT_SHORT = { mainline: '🏭主脉', frontier: '🔮卡位', explosion: '🔥爆发', swing: '⚡短线', dividend: '💎分红', sunset: '🌇夕阳' };
+// ttm_buy_range 是「合理估值带」，不是买点：现价<下沿=低估、带内=合理、>上沿=高估。
+// 值本身无单位，口径由 buy_range_type 决定，渲染时必须据此加单位。
+const RANGE_TIP = {
+  price: '合理价格区间（元）：现价低于下沿为低估，高于上沿为高估',
+  pe: '合理 PE(TTM) 区间（倍）：现价 PE 低于下沿为低估',
+  'pe-fwd': '合理前瞻 PE 区间（倍）',
+  'pe-core': '合理 PE 区间（倍，core 口径）',
+  pb: '合理 PB 区间（倍）',
+  ps: '合理 PS 区间（倍）'
+};
 const STAGE_LABEL = { boom: '爆发', grow: '成长', seed: '萌芽', mature: '成熟', decline: '衰退' };
 
 document.getElementById('search').addEventListener('input', (e) => {

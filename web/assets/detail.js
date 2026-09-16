@@ -73,7 +73,14 @@ async function me() {
 function renderHead(s, data) {
   const cat = CATS[s.category] || { label: s.category || '未分类', emoji: '🏷️' };
   const tags = (() => { try { return JSON.parse(s.tags || '[]'); } catch (e) { return []; } })();
-  const buyRange = (() => { try { const a = JSON.parse(s.ttm_buy_range || '[]'); return a.length === 2 ? a : null; } catch (e) { return null; } })();
+  // 合理估值带：值无单位，口径由 buy_range_type 决定（price=元，其余=倍数）
+  const buyRange = (() => {
+    try {
+      const a = JSON.parse(s.ttm_buy_range || '[]');
+      if (!Array.isArray(a) || a.length !== 2 || !(Number(a[0]) || Number(a[1]))) return null;
+      return Number(a[0]) + '~' + Number(a[1]) + (s.buy_range_type === 'price' ? ' 元' : 'x');
+    } catch (e) { return null; }
+  })();
   const dm = {};
   for (const t of data || []) dm[t.dimension] = t.value;
   const metrics = HEAD_DIMS.filter(k => dm[k] != null).map(k => {
@@ -92,11 +99,33 @@ function renderHead(s, data) {
         ${tags.map(t => `<span class="badge">${esc(t)}</span>`).join('')}
       </div>
       ${s.desc ? `<p class="dh-desc">${esc(s.desc)}</p>` : ''}
+      ${buyRange ? `<p class="dh-range">合理区间 <b>${buyRange}</b> <span class="dh-range-sub">${esc(RANGE_TIP[s.buy_range_type] || '')}</span></p>` : ''}
       <div class="dh-metrics">${metrics}</div>
     </div>`;
 }
 
 /* ---------- PE 图（3 年 + 分位统计） ---------- */
+// ttm_buy_range 是「合理估值带」：现价<下沿=低估、带内=合理、>上沿=高估。
+// 只有 PE 系列口径能画在 PE 轴上；price/pb/ps 口径量纲不同，画上去是错位标注，一律不画。
+const PE_RANGE_TYPES = ['pe', 'pe-fwd', 'pe-core'];
+function peAxisRange(s) {
+  if (PE_RANGE_TYPES.indexOf(s.buy_range_type) < 0) return null;
+  try {
+    const a = JSON.parse(s.ttm_buy_range || '[]');
+    if (!Array.isArray(a) || a.length !== 2 || !(Number(a[0]) || Number(a[1]))) return null;
+    return [Number(a[0]), Number(a[1])];
+  } catch (e) { return null; }
+}
+
+const RANGE_TIP = {
+  price: '合理价格带（元）',
+  pe: '合理 PE-TTM 带（倍）',
+  'pe-fwd': '合理前瞻 PE 带（倍）',
+  'pe-core': '合理 PE 带（倍，core 口径）',
+  pb: '合理 PB 带（倍）',
+  ps: '合理 PS 带（倍）'
+};
+
 function peChartSVG(pe, buyRange) {
   if (!pe || pe.length < 2) return '<p class="empty-sm">暂无 PE 历史数据</p>';
   const W = 1000, H = 320, PAD = 52, TOP = 16;
@@ -125,7 +154,7 @@ function peChartSVG(pe, buyRange) {
   if (buyRange && buyRange.length === 2) {
     const yLo = y(buyRange[0]), yHi = y(buyRange[1]);
     band = `<rect x="${PAD}" y="${yHi.toFixed(1)}" width="${W - PAD - 16}" height="${Math.abs(yLo - yHi).toFixed(1)}" fill="rgba(63,185,80,.14)" stroke="rgba(63,185,80,.4)" stroke-dasharray="4 3"/>
-      <text x="${W - 18}" y="${((yHi + yLo) / 2 + 4).toFixed(1)}" fill="#57d368" font-size="11" text-anchor="end">买入区间 ${num(buyRange[0])}~${num(buyRange[1])}</text>`;
+      <text x="${W - 18}" y="${((yHi + yLo) / 2 + 4).toFixed(1)}" fill="#57d368" font-size="11" text-anchor="end">合理区间 ${num(buyRange[0])}~${num(buyRange[1])}x</text>`;
   }
   const last = pe[pe.length - 1];
   const lastX = x(pe.length - 1), lastY = y(last.pe_ttm);
@@ -379,7 +408,7 @@ async function load() {
   let html = renderHead(s, d.data);
   for (const id of tpl) {
     let body = '';
-    if (id === 'pe') body = peChartSVG(d.pe, (() => { try { const a = JSON.parse(s.ttm_buy_range || '[]'); return a.length === 2 ? a : null; } catch (e) { return null; } })());
+    if (id === 'pe') body = peChartSVG(d.pe, peAxisRange(s));
     else if (id === 'lines') body = renderLines(d);
     else if (id === 'modules') { const ms = renderModules(d); if (ms) html += ms; continue; }
     else if (id === 'poscheck') body = renderPosCheck(d);

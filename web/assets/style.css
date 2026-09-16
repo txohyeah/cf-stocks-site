@@ -175,6 +175,9 @@ td .dim { color: var(--muted); font-size: 12px; opacity: .6; }
 .dh-top .code { color: var(--muted); font-size: 14px; font-weight: 500; }
 .dh-tags { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 12px; }
 .dh-desc { color: var(--muted); font-size: 14px; line-height: 1.75; margin-top: 14px; }
+.dh-range { margin-top: 12px; font-size: 14px; color: var(--muted); }
+.dh-range b { color: var(--text); font-weight: 600; margin-left: 4px; }
+.dh-range-sub { font-size: 12px; opacity: .75; margin-left: 6px; }
 .dh-metrics { display: flex; gap: 40px; margin-top: 18px; flex-wrap: wrap; }
 .metric .m-label { color: var(--muted); font-size: 12px; }
 .metric .m-val { font-size: 20px; font-weight: 700; margin-top: 4px; }

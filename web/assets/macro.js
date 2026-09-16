@@ -258,8 +258,9 @@ function renderFramework(d) {
   return `<table class="mc-table mc-cond"><thead><tr><th>条件</th><th>当前实测</th><th>状态</th></tr></thead>
     <tbody>${body}</tbody></table>
     <div class="mc-grid" style="margin-top:14px">${charts}</div>
-    <p class="mc-note">条件变量取自文章 <a href="/article/investment-framework">《产业投资框架 · 从宏观到个股的完整方法论》</a> 第 1 节——
-      每条都在回答<b>"什么情况下这个框架的判断是错的"</b>。<b>自动</b>项由 D1 每日刷新（tushare：美债/汇率；新浪外盘：布伦特/WTI）；
+    <p class="mc-note">这 7 条条件变量原定义在文章 <a href="/article/investment-framework">《产业投资框架 · 从宏观到个股的完整方法论》</a> §1.3「当前判断」——
+      每条都在回答<b>"什么情况下这个框架的判断是错的"</b>。2026-09-16 起该节从文章迁到本页（文章只讲方法论，见页内说明），
+      条件定义也随之由本页维护。<b>自动</b>项由 D1 每日刷新（tushare：美债/汇率；新浪外盘：布伦特/WTI）；
       <b>手工</b>项来自公开新闻（库内无数据源，录入在 scripts/macro_manual.json）。本轮更新：${esc(updated)}。</p>`;
 }
 
@@ -291,6 +292,37 @@ function mdLite(s) {
   flush();
   return html.join('');
 }
+/* ---------- 🧭 当前宏观定性（规则层：只在定性变化时留档） ---------- */
+const SRC_LABEL = {
+  auto: '自动规则（sync_macro.py）', agent: '模型（agent）',
+  human: '人工撰写', manual: '历史归档（原文快照）'
+};
+
+function renderRegime(d) {
+  // as_of 可能是 YYYYMMDD（脚本/笔记）或 ISO 带横线（历史行）→ 统一成 YYYYMMDD 再格式化
+  const dcn = x => dateCn(String(x || '').replace(/-/g, ''));
+  const rows = d.regime || [];
+  if (!rows.length) {
+    return `<p class="empty-sm">还没有定性记录。定性由 <code>scripts/sync_macro.py</code> 按框架条件自动判定，
+      只在<b>定性变化</b>时留一条历史（不是每天一条）。</p>`;
+  }
+  const cur = rows[0];
+  const hist = rows.slice(1);
+  const one = r => `<article class="note">
+      <h4>${esc(r.title || '未命名')}</h4>
+      <div class="note-meta">数据口径 ${dcn(r.as_of || r.note_date)} ｜ 记录于 ${esc((r.created_at || '').slice(0, 16))}
+        ｜ 来源：${esc(SRC_LABEL[r.source] || r.source || '—')}</div>
+      <div class="note-body">${mdLite(r.body_md)}</div>
+    </article>`;
+  return `<div class="rg-now">${esc(cur.title)}</div>
+    <div class="rg-meta">定性自 ${dateCn(cur.note_date)} 起 ｜ 数据口径 ${dcn(cur.as_of || cur.note_date)}
+      ｜ 来源：${esc(SRC_LABEL[cur.source] || cur.source || '—')} ｜ 历史记录 ${rows.length} 条</div>
+    <div class="rg-body">${mdLite(cur.body_md)}</div>
+    ${hist.length ? `<details class="note-more"><summary>历史定性（更早 ${hist.length} 条）</summary>${hist.map(one).join('')}</details>` : ''}
+    <p class="mc-note">这层是<b>结论</b>：只在定性变化时新增一条（不做每日流水，除非人工/模型另写）。
+      依据的每日实测在「🩺 框架条件变量体检」，每次分析在「📝 解读笔记」。本层自 2026-09-16 起从文章 §1.3 迁到本页。</p>`;
+}
+
 function renderNotes(d) {
   const notes = d.notes || [];
   if (!notes.length) {
@@ -451,9 +483,11 @@ async function load() {
   document.getElementById('mc-asof').textContent =
     `发布日历至 ${dateCn(asOf.cal)} ｜ 月度序列至 ${monthCn(asOf.ser)} ｜ 日频至 ${dateCn(asOf.dly)}`;
   document.getElementById('mc-body').innerHTML = `
-    <div class="mc-panel mc-panel-cond"><h3>🧭 框架条件变量体检 <span class="muted" style="font-size:12px">这篇文章说"什么情况下我错了"——这里每天对一次账</span></h3>
+    <div class="mc-panel mc-panel-regime"><h3>🧭 当前宏观定性 <span class="muted" style="font-size:12px">先看结论：框架现在处在哪一层（自动判定，只在定性变化时留档）</span></h3>
+      ${renderRegime(d)}</div>
+    <div class="mc-panel mc-panel-cond"><h3>🩺 框架条件变量体检 <span class="muted" style="font-size:12px">7 条条件逐条对账——每条都在回答"什么情况下上面这个判断是错的"</span></h3>
       ${renderFramework(d)}</div>
-    <div class="mc-panel mc-panel-note"><h3>📝 解读笔记 <span class="muted" style="font-size:12px">有数据发布时才写（模型撰写，带时间戳）——自动判定层在下方</span></h3>
+    <div class="mc-panel mc-panel-note" id="mc-notes"><h3>📝 解读笔记 <span class="muted" style="font-size:12px">有数据发布时才写（模型撰写，带时间戳）——每次宏观分析的结论都在这</span></h3>
       ${renderNotes(d)}</div>
     <div class="mc-panel"><h3>本期体检 <span class="muted" style="font-size:12px">近 60 天已公布的核心指标：实际 vs 市场预期，再给绝对水平的参照（分位 / 去年同期 / 历年同期均值）</span></h3>
       ${renderCheckup(d)}</div>
