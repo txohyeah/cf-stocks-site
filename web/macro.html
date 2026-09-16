@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>宏观环境 · Stocks 研究站</title>
+<link rel="stylesheet" href="/assets/style.css">
+<link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<style>
+  .mc-panel { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 18px; margin-bottom: 20px; }
+  .mc-panel > h3 { font-size: 15px; margin-bottom: 4px; }
+  .mc-kpi-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(178px, 1fr)); gap: 12px; margin-top: 12px; }
+  .mc-kpi { background: var(--panel2); border: 1px solid var(--border); border-radius: 10px; padding: 11px 13px; }
+  .mc-kpi .k-name { font-size: 12px; color: var(--muted); }
+  .mc-kpi .k-val { font-size: 20px; font-weight: 700; margin: 4px 0 2px; }
+  .mc-kpi .k-sub { font-size: 12px; color: var(--muted); line-height: 1.6; }
+  .mc-up { color: var(--green); } .mc-down { color: var(--red); } .mc-flat { color: var(--muted); }
+  .mc-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin-top: 12px; }
+  .mc-chart { background: var(--panel2); border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
+  .mc-chart h4 { font-size: 13px; margin-bottom: 6px; color: var(--text); font-weight: 600; }
+  .mc-chart svg { width: 100%; height: auto; display: block; }
+  .mc-legend { font-size: 12px; color: var(--muted); margin-top: 6px; line-height: 1.7; }
+  .mc-legend i { display: inline-block; width: 10px; height: 3px; border-radius: 2px; margin: 0 5px 3px 12px; }
+  .mc-legend i:first-child { margin-left: 0; }
+  .mc-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 10px; }
+  .mc-table th, .mc-table td { border-bottom: 1px solid var(--border); padding: 7px 10px; text-align: left; }
+  .mc-table th { color: var(--muted); font-weight: 600; }
+  .mc-table td.d { color: var(--muted); white-space: nowrap; }
+  .mc-note { font-size: 12px; color: var(--muted); line-height: 1.9; }
+  .mc-note b { color: var(--text); }
+  /* 预期差时间轴 */
+  .sr-list { display: grid; gap: 6px; margin-top: 10px; }
+  .sr-row { display: flex; align-items: center; gap: 12px; font-size: 12.5px; }
+  .sr-label { width: 116px; flex-shrink: 0; color: var(--muted); white-space: nowrap; }
+  .sr-bar { flex: 1; min-width: 120px; }
+  .sr-bar svg { width: 100%; height: 16px; display: block; }
+  .sr-val { width: 290px; flex-shrink: 0; text-align: right; color: var(--muted); }
+  @media (max-width: 720px) {
+    .sr-row { flex-wrap: wrap; }
+    .sr-val { width: 100%; text-align: left; }
+  }
+</style>
+</head>
+<body>
+<header class="top-bar">
+  <div class="brand"><a href="/">📈 Stocks 研究站</a></div>
+  <nav class="top-nav">
+    <a href="/industries">🏭 产业地图</a>
+    <a href="/articles">📖 文章</a>
+    <a href="/smart-money">🧠 聪明钱</a>
+    <a href="/macro" class="active">🧭 宏观</a>
+  </nav>
+  <div class="top-right">
+    <span id="who"></span>
+    <button id="theme-btn" class="btn-theme"></button>
+    <button id="logout-btn" class="btn-ghost">退出</button>
+  </div>
+</header>
+<main class="container">
+  <h2>🧭 宏观环境 <span class="muted" id="mc-asof"></span></h2>
+  <div id="mc-body"><p class="empty-sm">加载中…</p></div>
+</main>
+<script src="/assets/macro.js"></script>
+<script src="/assets/theme.js"></script>
+</body>
+</html>

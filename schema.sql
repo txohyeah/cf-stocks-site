@@ -157,3 +157,40 @@ CREATE TABLE IF NOT EXISTS risk_checks (
   as_of TEXT DEFAULT '',                   -- 最新报告期（数据截止）
   checked_at TEXT DEFAULT ''               -- 检查时间
 );
+-- ★ 宏观：数据发布日历（2026-09-16 新增，源：stock-analytics macro_calendar / tushare eco_cal）
+-- 含**未来已排期**行（value 为空 = 尚未公布），公布后由 sync_macro.py 幂等补上实际值
+CREATE TABLE IF NOT EXISTS macro_calendar (
+  date TEXT NOT NULL,                      -- YYYYMMDD
+  time TEXT NOT NULL DEFAULT '',           -- HH:MM（东八区）
+  event TEXT NOT NULL,                     -- 以"中国"开头（境外错标行已在源头过滤）
+  value TEXT,                              -- 原始字符串（带单位后缀，如 1,660.0B）
+  fore_value TEXT,                         -- 市场预期（原始字符串）
+  pre_value TEXT,                          -- 上月实际（原始字符串；数据源偶有脏行）
+  value_num REAL,                          -- 解析后数值（事件自身单位）
+  fore_num REAL,
+  pre_num REAL,
+  surprise REAL,                           -- value_num - fore_num（预期差）
+  unit TEXT DEFAULT '',                    -- B=十亿 / T=万亿 / M=百万 / %=百分点 / ''=原值
+  PRIMARY KEY (date, time, event)
+);
+CREATE INDEX IF NOT EXISTS idx_macro_cal_date ON macro_calendar(date);
+
+-- ★ 宏观：月度/季度序列（长表：一个指标一行，加指标不用改 schema）
+-- indicator：社融增量 / 社融存量 / M1同比 / M2同比 / M1M2剪刀差 / CPI同比 / PPI同比 / GDP同比
+CREATE TABLE IF NOT EXISTS macro_series (
+  month TEXT NOT NULL,                     -- YYYYMM（GDP 用 YYYYQn）
+  indicator TEXT NOT NULL,
+  value REAL,
+  unit TEXT DEFAULT '',
+  PRIMARY KEY (month, indicator)
+);
+
+-- ★ 宏观：日频（资金面/杠杆资金）—— indicator：Shibor隔夜 / 两融余额 / 北向净买
+CREATE TABLE IF NOT EXISTS macro_daily (
+  trade_date TEXT NOT NULL,
+  indicator TEXT NOT NULL,
+  value REAL,
+  unit TEXT DEFAULT '',
+  PRIMARY KEY (trade_date, indicator)
+);
+CREATE INDEX IF NOT EXISTS idx_macro_daily_date ON macro_daily(trade_date);

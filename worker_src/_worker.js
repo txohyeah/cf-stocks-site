@@ -206,6 +206,69 @@ async function apiArticles(env) {
   return json({ ok: true, total: results.length, articles: results });
 }
 
+// ---------- 宏观（数据由 scripts/sync_macro.py 灌入，源 tushare eco_cal 等）----------
+// 核心指标：按关键词从发布日历里各取"最近一次已公布"的行（一个查询 + JS 侧挑选，避免 12 次往返）
+const MACRO_CORE = [
+  { key: '社融', kw: '中国社会融资规模' },
+  { key: '信贷', kw: '中国新增人民币贷款' },
+  { key: 'M2', kw: '中国M2货币供应' },   // 注意：eco_cal 只有 M2，没有 M1——M1 取 macro_series
+  { key: 'CPI', kw: '中国CPI年率' },
+  { key: 'PPI', kw: '中国PPI年率' },
+  { key: '工业增加值', kw: '中国规模以上工业增加值' },
+  { key: '社零', kw: '中国社会消费品零售总额' },
+  { key: '固投', kw: '中国城镇固定资产投资' },
+  { key: '失业率', kw: '中国失业率' },
+  { key: '出口', kw: '中国出口年率' },
+  { key: '进口', kw: '中国进口年率' },
+  { key: 'GDP', kw: '中国GDP' }
+];
+const MACRO_SURPRISE_KW = ['中国社会融资规模', '中国新增人民币贷款'];
+
+async function apiMacro(env) {
+  const today = fmtLocal(new Date()).slice(0, 10).replace(/-/g, '');
+  const yearAgo = String(Number(today.slice(0, 4)) - 2) + today.slice(4);
+
+  // 1) 已公布的发布行（近 1 年），用于"本期体检"与"预期差时间轴"
+  const published = (await env.DB.prepare(
+    'SELECT date, time, event, value, fore_value, pre_value, value_num, fore_num, surprise, unit ' +
+    'FROM macro_calendar WHERE value IS NOT NULL AND date >= ? ORDER BY date DESC, time DESC'
+  ).bind(yearAgo).all()).results;
+
+  const latest = {};
+  for (const m of MACRO_CORE) {
+    const hit = published.find(r => r.event.includes(m.kw));
+    if (hit) latest[m.key] = { date: hit.date, event: hit.event, value: hit.value, fore_value: hit.fore_value,
+      value_num: hit.value_num, fore_num: hit.fore_num, surprise: hit.surprise, unit: hit.unit };
+  }
+  // 2) 预期差时间轴：最近 12 次社融/信贷发布（按日期升序给前端画图）
+  const surprises = published
+    .filter(r => MACRO_SURPRISE_KW.some(k => r.event.startsWith(k)))
+    .slice(0, 12).reverse();
+
+  // 3) 月度序列（近 4 年，前端各取最近 36 期）
+  const seriesFrom = String(Number(today.slice(0, 4)) - 4) + '01';
+  const series = (await env.DB.prepare(
+    'SELECT month, indicator, value, unit FROM macro_series WHERE month >= ? ORDER BY month'
+  ).bind(seriesFrom).all()).results;
+
+  // 4) 日频资金面（近 2 年）
+  const daily = (await env.DB.prepare(
+    'SELECT trade_date, indicator, value FROM macro_daily WHERE trade_date >= ? ORDER BY trade_date'
+  ).bind(yearAgo).all()).results;
+
+  // 5) 未来发布日程（值为空 = 尚未公布）
+  const upcoming = (await env.DB.prepare(
+    'SELECT date, time, event FROM macro_calendar WHERE value IS NULL AND date > ? ORDER BY date, time LIMIT 20'
+  ).bind(today).all()).results;
+
+  const asOf = (await env.DB.prepare(
+    'SELECT (SELECT MAX(date) FROM macro_calendar WHERE value IS NOT NULL) cal, ' +
+    '(SELECT MAX(month) FROM macro_series) ser, (SELECT MAX(trade_date) FROM macro_daily) dly'
+  ).first()) || {};
+
+  return json({ ok: true, today, as_of: asOf, latest, surprises, series, daily, upcoming });
+}
+
 // ---------- admin: 仅 admin，仅游客维护 ----------
 async function requireAdmin(request, env) {
   const u = await currentUser(request, env);
@@ -304,6 +367,7 @@ export default {
       if (p === '/api/me') return apiMe(request, env);
       if (p === '/api/me/password' && method === 'POST') return changeMyPassword(request, env, u);
       if (p === '/api/stocks' && method === 'GET') return apiStocks(request, env);
+      if (p === '/api/macro' && method === 'GET') return apiMacro(env);
       if (p === '/api/stocks-detail') {
         const code = url.searchParams.get('code') || '';
         if (!code) return json({ error: '缺 code' }, 400);
@@ -399,8 +463,8 @@ export default {
       }
       return serveStatic(url.origin + '/detail.html', env);
     }
-    // 产业地图/产业详情/文章页/聪明钱报告
-    const pageMap = { '/industries': '/industries.html', '/articles': '/articles.html', '/smart-money': '/smart-money.html' };
+    // 产业地图/产业详情/文章页/聪明钱报告/宏观
+    const pageMap = { '/industries': '/industries.html', '/articles': '/articles.html', '/smart-money': '/smart-money.html', '/macro': '/macro.html' };
     const industryPage = p.match(/^\/industry\/([^\/]+)$/);
     if (industryPage) {
       const ind = await env.DB.prepare('SELECT id FROM industries WHERE id = ?').bind(decodeURIComponent(industryPage[1])).first();
