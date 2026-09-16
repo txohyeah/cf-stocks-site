@@ -3,8 +3,12 @@
 
 用法：
   python3 scripts/sync_macro.py                        # 只生成 SQL 到 data/macro_sync.sql
-  python3 scripts/sync_macro.py --exec                 # 生成并写入 D1（日频仅近 30 天）
+  python3 scripts/sync_macro.py --exec                 # 生成并写入 D1（**默认增量**：只写变化的行）
+  python3 scripts/sync_macro.py --diff                 # 只比对、打印哪几行变了（不写）
+  python3 scripts/sync_macro.py --exec --full-write    # 跳过比对，全量重写（首次/修复用）
   python3 scripts/sync_macro.py --exec --daily-full    # 首次上线：日频全量灌历史
+
+⚠️ 常量 `*_LOOKBACK_DAYS` 和 `--daily-full` 只影响**读本地库的范围**；是否写 D1 由增量比对决定。
 
 三张表（DDL 见 schema.sql）：
   macro_calendar  数据发布日历（含未来排期）+ 参照系（同比/近 12 期分位/历年同期均值）——**全量 UPSERT**
@@ -13,6 +17,9 @@
 
 为什么日频默认只同步近 30 天：全量约 9.3k 行 ≈ 47 次 D1 API 调用，每天重灌没必要；
 首启用一次 --daily-full 灌满历史，之后日常增量即可。
+**为什么改增量（2026-09-16 晚）**：D1 免费版日写上限 10 万行，全量一次 7,847 行，
+一天跑十来次就撞 `code 7500`（当晚 21:50 实际发生，整条语句 FAIL）。而每天真正变化的
+只有个位数行 —— 增量后日常一次同步通常只写 0~几十行，写额度消耗降两个数量级。
 
 数据来源（均为 tushare，经 stock-analytics 落库，口径与坑见 stock-analytics/specs/macro-data.md）：
   macro_calendar ← eco_cal（实际/预期/上月 + 解析后的 surprise）
@@ -588,9 +595,75 @@ def insert_stmts(table, cols, rows, conflict_cols):
     return stmts
 
 
-def exec_stmts(stmts):
+# ---------- 增量写入（2026-09-16 新增）----------
+# 背景：D1 免费版**日写上限 10 万行**，一次全量同步写 7,847 行 → 满额只够 ~12 次/天，
+# 跑到晚上就撞 `code 7500`（2026-09-16 21:50 实际发生）。而实际上每天真正变化的行
+# 只有个位数（新增的日频行 + 少数被重算的参照系），全量重写纯属浪费额度。
+# 做法：写之前先 SELECT 回读 D1 现值，只把**内容不同**的行生成 SQL；
+#   - 回读成本：~1.3 万行读 / 次，对 500 万行/日的读额度是零头
+#   - 无变化时一条 SQL 都不发（0 行写消耗），也会跳过 exec
+#   - 回读失败（网络/权限）时**退化为全量写入**，宁可多写不可漏写
+# 注意：D1 被绕过 sync_macro 直接改过（手工 SQL / 备份恢复）也能被这个比对发现并纠正，
+# 因为基准是 D1 的实际内容，不是本地快照。
+# 只参与比对屏蔽、不参与写入的列。
+# ⚠️ 现在**故意留空**：macro_conditions / macro_industry_state 的 `updated_at` 会被页面
+#    渲染成「本轮更新 X」（macro.js:257/367），若把它屏蔽掉，没变化的那十几行时间戳会
+#    冻在上一次内容变化的时间，页面就在说谎。代价只有 16 行/天（0.016% 写额度），
+#    不值当为它优化 —— 真正的大头是另两张表各 2,800 行的时间戳翻新。
+IGNORE_COLS = ()  # 例：需要屏蔽某列时写 ('col_name',)
+
+
+def _norm(v):
+    """把本地值与 D1 回读值归一化成可比较形式。
+
+    坑：D1 里 value_num 是 REAL 但 value 是 TEXT，同一串数字可能以
+    1660000000000（int）/ 1.66e12（float）/ '1660000000000'（str）三种形态回来，
+    直接比会误判成"有变化"→ 白写一遍。统一转 float 再比，转不动的按字符串比。
+    """
+    if v is None:
+        return None
+    if isinstance(v, bool):
+        return int(v)
+    if isinstance(v, (int, float)):
+        return float(v)
+    s = str(v)
+    try:
+        return float(s)
+    except (TypeError, ValueError):
+        return s
+
+
+def diff_rows(db, table, cols, rows, key_cols):
+    """返回 (变化的行, 未变化行数)。D1 现值作基准。
+
+    IGNORE_COLS：只影响**比对**、不影响写入。`updated_at` 是本次同步的墙上时间，
+    每次都不一样 —— 若把它算进比较，条件变量/产业状态这两张表会**每次都全表重写**
+    （7+9=16 行纯时间戳翻新，写了个寂寞）。排除后：内容真变了才写，顺带刷新时间戳。
+    """
     import cf_d1
-    db = cf_d1.find_db()
+    ok, exist, _m, err = cf_d1.execute_sql(db, f'SELECT {", ".join(cols)} FROM {table}')
+    if not ok:
+        print(f'  [增量] {table}: 回读失败 → 退化为全量写入（' + json.dumps(err, ensure_ascii=False)[:120] + '）')
+        return rows, 0
+    idx = [cols.index(k) for k in key_cols]
+    cmp_idx = [i for i, c in enumerate(cols) if c not in IGNORE_COLS]
+    cur = {}
+    for r in (exist or []):
+        vals = tuple(_norm(r.get(c)) for c in cols)
+        cur[tuple(vals[i] for i in idx)] = tuple(vals[i] for i in cmp_idx)
+    changed = []
+    for row in rows:
+        vals = tuple(_norm(v) for v in row)
+        if cur.get(tuple(vals[i] for i in idx)) != tuple(vals[i] for i in cmp_idx):
+            changed.append(row)
+    print(f'  [增量] {table}: {len(rows)} 行中 {len(changed)} 行有变化 → 只写这些'
+          f'（省下 {len(rows) - len(changed)} 行写额度）')
+    return changed, len(rows) - len(changed)
+
+
+def exec_stmts(stmts, db=None):
+    import cf_d1
+    db = db or cf_d1.find_db()
     if not db:
         raise SystemExit('D1 不存在')
     total = 0
@@ -642,6 +715,10 @@ def verify(db):
 def main():
     ap = argparse.ArgumentParser(description='宏观数据同步 → D1')
     ap.add_argument('--exec', action='store_true', help='写入 D1（默认只生成 SQL）')
+    ap.add_argument('--diff', action='store_true',
+                    help='只做增量比对并打印变化行（不写 D1）——排查"到底什么变了"用')
+    ap.add_argument('--full-write', action='store_true',
+                    help='跳过增量比对，全量重写（首次上线 / 灾难修复用；日常别加）')
     ap.add_argument('--daily-full', action='store_true', help='日频全量（首次上线用；默认近 30 天）')
     ap.add_argument('--out', default=OUT, help=f'SQL 输出路径（默认 {OUT}）')
     args = ap.parse_args()
@@ -660,24 +737,61 @@ def main():
     header = [f'-- 宏观数据（sync_macro.py 生成 {now}）',
               '-- 源：stock-analytics macro_calendar/macro_series/macro_daily/oil_global/us_tycr/fx_daily',
               '--    （tushare 为主，外盘原油走新浪全球期货日线；手工项见 scripts/macro_manual.json）']
+    plan = [
+        ('macro_calendar', CAL_COLS, cal, ['date', 'time', 'event']),
+        ('macro_series', SERIES_COLS, series, ['month', 'indicator']),
+        ('macro_daily', DAILY_COLS, daily, ['trade_date', 'indicator']),
+        ('macro_conditions', COND_COLS, cond, ['cond_key']),
+        ('macro_industry_state', IND_COLS, ind, ['industry_id']),
+    ]
+
+    db = None
+    if args.exec or args.diff:
+        import cf_d1
+        db = cf_d1.find_db()
+        if not db:
+            raise SystemExit('D1 不存在')
+    # 增量比对：--diff 只预览；--exec 比对后再写；--full-write 跳过比对（首次/修复用）
+    if (args.exec or args.diff) and not args.full_write:
+        print('[增量比对] 基准 = D1 现内容（D1 被手工改过也能发现）')
+        plan = [(t, c, diff_rows(db, t, c, r, k)[0], k) for t, c, r, k in plan]
+        print('[增量比对] 本次需写 %d 行（全量需 %d 行）'
+              % (sum(len(r) for _t, _c, r, _k in plan),
+                 len(cal) + len(series) + len(daily) + len(cond) + len(ind)))
+    else:
+        plan = [(t, c, r, k) for t, c, r, k in plan]
+
     stmts = []
-    stmts += insert_stmts('macro_calendar', CAL_COLS, cal, ['date', 'time', 'event'])
-    stmts += insert_stmts('macro_series', SERIES_COLS, series, ['month', 'indicator'])
-    stmts += insert_stmts('macro_daily', DAILY_COLS, daily, ['trade_date', 'indicator'])
-    stmts += insert_stmts('macro_conditions', COND_COLS, cond, ['cond_key'])
-    stmts += insert_stmts('macro_industry_state', IND_COLS, ind, ['industry_id'])
+    for table, cols, rows, keys in plan:
+        stmts += insert_stmts(table, cols, rows, keys)
 
     # 注释块放在文件头且**不单独成句**（否则 cf_d1 exec 会把注释当语句执行）
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     with open(args.out, 'w', encoding='utf-8') as f:
-        f.write('\n'.join(header) + '\n' + ';\n'.join(stmts) + ';\n')
+        f.write('\n'.join(header) + '\n')
+        if stmts:
+            f.write(';\n'.join(stmts) + ';\n')
+        else:
+            f.write('-- 本次无变化行，无需写入\n')
     print(f'SQL 已写出：{args.out}（{len(stmts)} 条语句）')
     print(f'  日历 {len(cal)} 行（其中未来排期 {sum(1 for r in cal if r[0] > now[:10].replace("-", ""))} 行）'
           f' ｜ 序列 {len(series)} 行 ｜ 日频 {len(daily)} 行（since={since}）｜ 条件变量 {len(cond)} 条')
     print(f'  当前定性：{regime[0]}')
 
+    if args.diff and not args.exec:
+        for table, _cols, rows, keys in plan:
+            if rows:
+                print(f'  [{table}] 待写行（最多列 3 行）：')
+                for r in rows[:3]:
+                    print('     ', json.dumps(dict(zip(_cols, r)), ensure_ascii=False)[:200])
+        return
+
     if args.exec:
-        db, total = exec_stmts(stmts)
+        if not stmts:
+            print('[跳过] 本次无变化行 → 不发任何写 SQL（消耗 0 行写额度）')
+            verify(db)
+            return
+        db, total = exec_stmts(stmts, db)
         print(f'已写入 D1，累计 rows_changed={total}（⚠️ D1 对 upsert 恒回报 0，以回读为准）')
         sync_regime(*regime, now, args.out)   # 定性层：只在文本变化时新增一条历史
         verify(db)                            # 回读核对放最后，让"当前定性"那一项反映本次结果
