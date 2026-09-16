@@ -194,3 +194,21 @@ CREATE TABLE IF NOT EXISTS macro_daily (
   PRIMARY KEY (trade_date, indicator)
 );
 CREATE INDEX IF NOT EXISTS idx_macro_daily_date ON macro_daily(trade_date);
+
+-- ★ 宏观：框架条件变量体检（2026-09-16 新增）
+-- 来源 = 文章 /article/investment-framework 第 1 节定义的条件变量 + 宏观页自测补充项，
+-- 由 sync_macro.py 每次同步**整体重算**（含 auto 库内数据与 manual 手工新闻事实）。
+-- status_kind：ok 达成 / warn 观察 / bad 反向 / gap 无数据源
+CREATE TABLE IF NOT EXISTS macro_conditions (
+  cond_key TEXT PRIMARY KEY,               -- 稳定键（如 oil_30d_95），页面按 sort_order 展示
+  title TEXT NOT NULL,                     -- 条件名
+  target_text TEXT DEFAULT '',             -- 条件定义（文章原文口径）
+  current_text TEXT DEFAULT '',            -- 当前实测（数字/日期）
+  status_kind TEXT DEFAULT 'warn',         -- ok / warn / bad / gap
+  status_text TEXT DEFAULT '',             -- 状态徽章文字
+  source TEXT DEFAULT '',                  -- 数据来源（自动/手工分别标注）
+  source_kind TEXT DEFAULT 'auto',         -- auto（库内每日自动）/ manual（手工录入）
+  note TEXT DEFAULT '',                    -- 补充说明
+  sort_order INTEGER DEFAULT 0,
+  updated_at TEXT
+);

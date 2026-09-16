@@ -5,10 +5,35 @@ function esc(s) {
   return String(s == null ? '' : s).replace(/[<>&"]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]));
 }
 
+/* 标题 → 锚点 id（固定 sec- 前缀，避免以数字开头导致 CSS 选择器不可用） */
+function slugify(text, used) {
+  const base = 'sec-' + (text.replace(/<[^>]*>/g, '').trim()
+    .replace(/\s+/g, '-')
+    .replace(/[^\w\u4e00-\u9fa5-]/g, '')
+    .replace(/-{2,}/g, '-')
+    .replace(/^-|-$/g, '')
+    .toLowerCase() || 'item');
+  let id = base;
+  let n = 2;
+  while (used.has(id)) { id = base + '-' + (n++); }
+  used.add(id);
+  return id;
+}
+
+/* 目录：h2 顶层 + h3 缩进一层（从正文标题自动生成，杜绝手写锚点失效） */
+function tocHtml(toc) {
+  const items = toc.filter(t => t.level === 2 || t.level === 3);
+  if (items.length < 3) return '';
+  return '<nav class="ar-toc"><div class="ar-toc-title">目录</div>' + items.map(t =>
+    `<a class="ar-toc-lv${t.level}" href="#${t.id}">${t.text}</a>`).join('') + '</nav>';
+}
+
 /* 极简 Markdown → HTML（标题/粗体/斜体/列表/表格/代码/引用/链接/段落） */
 function md(origin) {
   const lines = origin.replace(/\r\n/g, '\n').split('\n');
   const out = [];
+  const toc = [];
+  const used = new Set();
   let i = 0;
   let inTable = false;
   const flushTable = () => { if (inTable) { out.push('</table>'); inTable = false; } };
@@ -31,7 +56,14 @@ function md(origin) {
     }
     flushTable();
     const h = line.match(/^(#{1,4})\s+(.*)$/);
-    if (h) { out.push(`<h${h[1].length}>` + inline(h[2]) + `</h${h[1].length}>`); i++; continue; }
+    if (h) {
+      const lv = h[1].length;
+      const id = slugify(h[2], used);
+      toc.push({ level: lv, text: h[2].replace(/\*\*/g, ''), id });
+      out.push(`<h${lv} id="${id}">` + inline(h[2]) + `</h${lv}>`);
+      i++;
+      continue;
+    }
     if (/^(-{3,}|\*{3,})$/.test(line)) { out.push('<hr>'); i++; continue; }
     if (/^>\s?/.test(line)) {
       const buf = [];
@@ -66,7 +98,7 @@ function md(origin) {
     i++;
   }
   flushTable();
-  return out.join('\n');
+  return { html: out.join('\n'), toc };
 }
 
 function inline(s) {
@@ -76,6 +108,8 @@ function inline(s) {
   // 粗体+斜体 **x** / *x*（避免与链接冲突，先粗后斜）
   t = t.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
   t = t.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<i>$2</i>');
+  // 站内锚点 [text](#id)（目录/交叉引用）
+  t = t.replace(/\[([^\]]+)\]\(#([^)]+)\)/g, '<a href="#$2">$1</a>');
   // 链接 [text](url)
   t = t.replace(/\[([^\]]+)\]\((https?:[^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
   return t;
@@ -99,10 +133,11 @@ async function load() {
   const a = d.article;
   document.title = a.title + ' · Stocks 研究站';
   const el = document.getElementById('article');
+  const { html, toc } = md(a.content_md || '');
   el.innerHTML = '<h1>' + esc(a.title) + '</h1>' +
     (a.summary ? '<p class="ar-summary">' + esc(a.summary) + '</p>' : '') +
     '<div class="ar-meta">' + esc((a.updated_at || '').slice(0, 10)) + '</div>' +
-    md(a.content_md || '');
+    tocHtml(toc) + '<div class="ar-body">' + html + '</div>';
 }
 
 document.getElementById('logout-btn').addEventListener('click', async () => {

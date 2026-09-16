@@ -251,9 +251,13 @@ async function apiMacro(env) {
     'SELECT month, indicator, value, unit FROM macro_series WHERE month >= ? ORDER BY month'
   ).bind(seriesFrom).all()).results;
 
-  // 4) 日频资金面（近 2 年）
+  // 4) 日频序列（Shibor/两融/北向/布伦特/WTI/美债10Y/美债2Y/离岸人民币）
+  //    每个指标只取最近 260 个交易日 —— 页面最长的图是 250 点，多取无益且会撑大响应体
   const daily = (await env.DB.prepare(
-    'SELECT trade_date, indicator, value FROM macro_daily WHERE trade_date >= ? ORDER BY trade_date'
+    'SELECT trade_date, indicator, value FROM (' +
+    '  SELECT trade_date, indicator, value, ROW_NUMBER() OVER (PARTITION BY indicator ORDER BY trade_date DESC) rn' +
+    '  FROM macro_daily WHERE trade_date >= ?' +
+    ') WHERE rn <= 260 ORDER BY trade_date'
   ).bind(yearAgo).all()).results;
 
   // 5) 未来发布日程（值为空 = 尚未公布）
@@ -261,12 +265,21 @@ async function apiMacro(env) {
     'SELECT date, time, event FROM macro_calendar WHERE value IS NULL AND date > ? ORDER BY date, time LIMIT 20'
   ).bind(today).all()).results;
 
+  // 6) 框架条件变量体检（来自文章《产业投资框架》第 1 节；表可能尚未建立 → 容错为空数组）
+  let conditions = [];
+  try {
+    conditions = (await env.DB.prepare(
+      'SELECT cond_key, title, target_text, current_text, status_kind, status_text, source, source_kind, note, updated_at ' +
+      'FROM macro_conditions ORDER BY sort_order, cond_key'
+    ).all()).results;
+  } catch (e) { conditions = []; }
+
   const asOf = (await env.DB.prepare(
     'SELECT (SELECT MAX(date) FROM macro_calendar WHERE value IS NOT NULL) cal, ' +
     '(SELECT MAX(month) FROM macro_series) ser, (SELECT MAX(trade_date) FROM macro_daily) dly'
   ).first()) || {};
 
-  return json({ ok: true, today, as_of: asOf, latest, surprises, series, daily, upcoming });
+  return json({ ok: true, today, as_of: asOf, latest, surprises, series, daily, upcoming, conditions });
 }
 
 // ---------- admin: 仅 admin，仅游客维护 ----------

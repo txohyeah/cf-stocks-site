@@ -200,6 +200,41 @@ function renderMoney(d) {
       资金面取日频数据，北向为 20 日滚动累计。</p>`;
 }
 
+/* ---------- 🧭 框架条件变量体检（文章《产业投资框架》第 1 节定义） ---------- */
+const COND_ICON = { ok: '✅', warn: '⏳', bad: '❌', gap: '⛔' };
+function renderFramework(d) {
+  const rows = d.conditions || [];
+  const dly = d.daily || [];
+  const pick = name => dly.filter(x => x.indicator === name).slice(-250)
+    .map(x => ({ x: dateCn(x.trade_date), y: x.value }));
+  const charts = [
+    ['布伦特原油（美元/桶）', pick('布伦特原油'), { color: C_ALT, dot: C_ALT, dec: 2 }],
+    ['美债 10Y（%）', pick('美债10Y'), { color: '#79b8ff', dot: '#79b8ff', dec: 2 }],
+    ['离岸人民币 USDCNH', pick('离岸人民币'), { color: C_UP, dot: C_UP, dec: 4 }],
+  ].map(([title, pts, opt]) => {
+    const lastY = pts.length ? pts[pts.length - 1].y : null;
+    return `<div class="mc-chart"><h4>${title}</h4>${lineSVG(pts, opt)}
+      <p class="mc-legend">最新 ${lastY == null ? '—' : num(lastY, opt.dec)} ｜ 近 ${pts.length} 个交易日</p></div>`;
+  }).join('');
+
+  const body = rows.map(r => {
+    const icon = COND_ICON[r.status_kind] || '⏳';
+    return `<tr>
+      <td class="cond-name"><b>${esc(r.title)}</b><div class="cond-target">${esc(r.target_text)}</div></td>
+      <td>${esc(r.current_text)}${r.note ? `<div class="cond-note">${esc(r.note)}</div>` : ''}</td>
+      <td class="cond-status k-${esc(r.status_kind)}">${icon} ${esc(r.status_text)}
+        <div class="cond-src">${r.source_kind === 'manual' ? '手工' : '自动'} ｜ ${esc(r.source)}</div></td>
+    </tr>`;
+  }).join('');
+  const updated = rows.length && rows[0].updated_at ? rows[0].updated_at.slice(0, 16) : '—';
+  return `<table class="mc-table mc-cond"><thead><tr><th>条件</th><th>当前实测</th><th>状态</th></tr></thead>
+    <tbody>${body}</tbody></table>
+    <div class="mc-grid" style="margin-top:14px">${charts}</div>
+    <p class="mc-note">条件变量取自文章 <a href="/article/investment-framework">《产业投资框架 · 从宏观到个股的完整方法论》</a> 第 1 节——
+      每条都在回答<b>"什么情况下这个框架的判断是错的"</b>。<b>自动</b>项由 D1 每日刷新（tushare：美债/汇率；新浪外盘：布伦特/WTI）；
+      <b>手工</b>项来自公开新闻（库内无数据源，录入在 scripts/macro_manual.json）。本轮更新：${esc(updated)}。</p>`;
+}
+
 /* ---------- 预期差时间轴（零轴居中条） ---------- */
 function renderSurprise(d) {
   const rows = d.surprises || [];
@@ -305,6 +340,8 @@ async function load() {
   document.getElementById('mc-asof').textContent =
     `发布日历至 ${dateCn(asOf.cal)} ｜ 月度序列至 ${monthCn(asOf.ser)} ｜ 日频至 ${dateCn(asOf.dly)}`;
   document.getElementById('mc-body').innerHTML = `
+    <div class="mc-panel mc-panel-cond"><h3>🧭 框架条件变量体检 <span class="muted" style="font-size:12px">这篇文章说"什么情况下我错了"——这里每天对一次账</span></h3>
+      ${renderFramework(d)}</div>
     <div class="mc-panel"><h3>本期体检 <span class="muted" style="font-size:12px">近 60 天已公布的核心指标（实际 vs 市场预期）</span></h3>
       ${renderCheckup(d)}</div>
     <div class="mc-panel"><h3>货币与资金面</h3>${renderMoney(d)}</div>
@@ -315,8 +352,9 @@ async function load() {
     <div class="mc-panel"><h3>未来 45 天发布日程</h3>${renderUpcoming(d)}</div>
     <div class="mc-panel"><h3>说明</h3>
       <p class="mc-note">
-        <b>数据源</b>：tushare（eco_cal 发布日历 / sf_month 社融 / cn_m 货币 / cn_cpi / cn_ppi / cn_gdp / shibor / margin 两融 / moneyflow_hsgt 北向），
-        经 stock-analytics 落库后由 <b>scripts/sync_macro.py</b> 每日同步到本站 D1。<br>
+        <b>数据源</b>：tushare（eco_cal 发布日历 / sf_month 社融 / cn_m 货币 / cn_cpi / cn_ppi / cn_gdp / shibor / margin 两融 / moneyflow_hsgt 北向 /
+        us_tycr 美债收益率 / fx_daily 离岸人民币）+ <b>新浪财经全球期货日线</b>（布伦特、WTI —— tushare 侧无外盘原油权限，实测 index_global 只有股指、
+        fut_basic(IPE/NYMEX) 为空），经 stock-analytics 落库后由 <b>scripts/sync_macro.py</b> 每日同步到本站 D1。<br>
         <b>口径</b>：社融、信贷为按月发布的<b>单月增量</b>（如 2026-08 社融 1,660.0B = 1.66 万亿），不是存量；"预期"为发布前市场一致预期，
         两者之差即"预期差"。预期差的<b>方向</b>只说明数据比预期强或弱，不构成对指数或个股方向的判断。<br>
         <b>前瞻</b>：发布日历含未来已排期事件（值为空），公布后自动补上实际值；未来日程按当前已排期展示，临时调整以交易所/统计局公告为准。<br>

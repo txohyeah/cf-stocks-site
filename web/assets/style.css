@@ -348,6 +348,18 @@ td .dim { color: var(--muted); font-size: 12px; opacity: .6; }
 .markdown hr { border: 0; border-top: 1px solid var(--border); margin: 18px 0; }
 .markdown .blk-table { margin: 10px 0; }
 
+/* 文章自动目录（由正文标题生成，锚点即标题 id） */
+.ar-toc {
+  display: grid; gap: 2px; background: var(--panel2); border: 1px solid var(--border);
+  border-radius: 10px; padding: 12px 16px; margin: 14px 0 18px;
+}
+.ar-toc-title { font-size: 12px; color: var(--muted); letter-spacing: .08em; margin-bottom: 4px; }
+.ar-toc a { color: var(--text); text-decoration: none; font-size: 13.5px; line-height: 1.9; }
+.ar-toc a:hover { color: var(--accent); }
+.ar-toc-lv3 { padding-left: 16px; color: var(--muted); font-size: 13px; }
+.markdown h2 { scroll-margin-top: 70px; }
+.markdown h3 { scroll-margin-top: 70px; }
+
 
 /* ---------- 主题切换 ---------- */
 .btn-theme {
