@@ -1,0 +1,129 @@
+{
+  "_readme": [
+    "宏观 → 产业 传导表（2026-09-16 新增）。这是**人工写死的敏感度规则**，不是模型即兴发挥：",
+    "每条 driver 都是「一个有实测值的宏观指标 + 一个方向判断 + 一个阈值」，sync_macro.py 每次同步时重算状态。",
+    "定位：只回答「现在的宏观环境对这个产业是顺风还是逆风」——**不映射到个股买卖**，产业红绿灯仍在 /industries。",
+    "阈值是可以争论的（本来就是判断），但必须写出来，方便以后复盘改。改这里只改这个文件，不用动代码。",
+    "metric 取值：brent / brent_streak95 / us10y / us2y / cnh / shibor_on / margin_total / north20 /",
+    "             series:M1M2剪刀差 / cal:<发布日历事件前缀>（取该事件最近一次公布值）"
+  ],
+  "industries": [
+    {
+      "id": "liquid-cooling",
+      "name": "数据中心液冷",
+      "link": "海外算力资本开支 + 全球成长股资金面（与 AI 服务器/光模块同链）",
+      "drivers": [
+        {"metric": "us10y", "label": "美债 10Y", "favor": "below", "threshold": 4.5, "neutral": 0.15,
+         "note": "利率在高位 = 全球成长股估值与海外 capex 融资成本受压；这条是本链的硬约束"},
+        {"metric": "north20", "label": "北向 20 日累计", "favor": "above", "threshold": 0, "neutral": 50,
+         "note": "外资回流 = 外资风险偏好在，AI 链是外资最容易加仓的方向之一（共同项，非本产业独有）"},
+        {"metric": "margin_total", "label": "两融余额", "favor": "above", "threshold": 2.5, "neutral": 0.05,
+         "note": "杠杆资金活跃度：高 beta 题材的承接力（共同项）"}
+      ]
+    },
+    {
+      "id": "optical-comm",
+      "name": "光通信",
+      "link": "海外算力资本开支 + 国内资金成本",
+      "drivers": [
+        {"metric": "us10y", "label": "美债 10Y", "favor": "below", "threshold": 4.5, "neutral": 0.15,
+         "note": "与液冷同链，海外 capex 的贴现率"},
+        {"metric": "shibor_on", "label": "Shibor 隔夜", "favor": "below", "threshold": 2.0, "neutral": 0.1,
+         "note": "国内资金成本低 = 成长板块相对占优（共同项）"},
+        {"metric": "north20", "label": "北向 20 日累计", "favor": "above", "threshold": 0, "neutral": 50,
+         "note": "外资风险偏好（共同项）"}
+      ]
+    },
+    {
+      "id": "semi-equipment",
+      "name": "半导体设备",
+      "link": "晶圆厂资本开支（国内融资成本 + 海外估值环境）",
+      "drivers": [
+        {"metric": "us10y", "label": "美债 10Y", "favor": "below", "threshold": 4.5, "neutral": 0.15,
+         "note": "半导体是全球定价的久期资产，利率高位压制估值"},
+        {"metric": "shibor_on", "label": "Shibor 隔夜", "favor": "below", "threshold": 2.0, "neutral": 0.1,
+         "note": "国内低利率环境对扩产融资有利"},
+        {"metric": "margin_total", "label": "两融余额", "favor": "above", "threshold": 2.5, "neutral": 0.05,
+         "note": "设备是国产替代主线，靠杠杆资金推动"}
+      ]
+    },
+    {
+      "id": "copper-gold",
+      "name": "铜金资源",
+      "link": "实际利率（金）+ 工业需求与再通胀（铜）",
+      "drivers": [
+        {"metric": "us10y", "label": "美债 10Y", "favor": "below", "threshold": 4.5, "neutral": 0.15,
+         "note": "名义利率高、通胀若被证明是成本推动 → 实际利率偏高，压制金价弹性"},
+        {"metric": "cal:中国PPI年率", "label": "中国 PPI 同比", "favor": "above", "threshold": 0, "neutral": 0.3,
+         "note": "工业品价格转正 = 再通胀交易成立，铜的需求端叙事才立得住"},
+        {"metric": "cal:中国城镇固定资产投资", "label": "固投（年初至今）", "favor": "above", "threshold": 0, "neutral": 0.5,
+         "note": "国内投资是铜的实物需求基本盘"}
+      ]
+    },
+    {
+      "id": "securities",
+      "name": "证券",
+      "link": "市场流动性与信用扩张（业绩高度联动成交额与两融）",
+      "drivers": [
+        {"metric": "margin_total", "label": "两融余额", "favor": "above", "threshold": 2.5, "neutral": 0.05,
+         "note": "两融是券商利息收入与市场活跃度的直接代理变量"},
+        {"metric": "north20", "label": "北向 20 日累计", "favor": "above", "threshold": 0, "neutral": 50,
+         "note": "增量资金决定成交量，成交量决定券商 beta"},
+        {"metric": "cal:中国社会融资规模", "label": "社融（单月）", "favor": "above", "threshold": 2.0, "neutral": 0.2,
+         "note": "信用扩张期券商顺周期属性才发挥（单位：万亿）"}
+      ]
+    },
+    {
+      "id": "baijiu",
+      "name": "白酒",
+      "link": "居民消费能力与资金活化程度（顺周期可选消费）",
+      "drivers": [
+        {"metric": "cal:中国社会消费品零售总额年率", "label": "社零同比", "favor": "above", "threshold": 3.0, "neutral": 0.3,
+         "note": "白酒是全市场最典型的可选消费，社零是它最直接的宏观锚"},
+        {"metric": "series:M1M2剪刀差", "label": "M1−M2 剪刀差", "favor": "above", "threshold": 0, "neutral": 0.5,
+         "note": "剪刀差为负 = 钱躺在定期不动，消费与商务需求的活化不足"},
+        {"metric": "cal:中国失业率", "label": "城镇调查失业率", "favor": "below", "threshold": 5.0, "neutral": 0.1,
+         "note": "就业是消费信心的前置变量"}
+      ]
+    },
+    {
+      "id": "cxo",
+      "name": "医药外包(CXO)",
+      "link": "海外 biotech 融资环境 + 汇率（收入以美元计价）",
+      "drivers": [
+        {"metric": "us10y", "label": "美债 10Y", "favor": "below", "threshold": 4.5, "neutral": 0.15,
+         "note": "利率高 = 海外一级市场 biotech 融资枯竭，直接砍掉 CXO 的订单来源"},
+        {"metric": "north20", "label": "北向 20 日累计", "favor": "above", "threshold": 0, "neutral": 50,
+         "note": "CXO 是外资传统重仓，外资回流是估值端的直接支撑"},
+        {"metric": "cnh", "label": "离岸人民币 (USDCNH)", "favor": "above", "threshold": 7.0, "neutral": 0.05,
+         "note": "收入美元计价：人民币偏强对折算不利（这条是汇率的反向映射）"}
+      ]
+    },
+    {
+      "id": "industrial-gas",
+      "name": "工业气体",
+      "link": "下游化工/冶金开工率（价格 + 投资）",
+      "drivers": [
+        {"metric": "cal:中国PPI年率", "label": "中国 PPI 同比", "favor": "above", "threshold": 0, "neutral": 0.3,
+         "note": "气体是「工业的血液」，PPI 转正说明下游化工品价格与开工在恢复"},
+        {"metric": "cal:中国城镇固定资产投资", "label": "固投（年初至今）", "favor": "above", "threshold": 0, "neutral": 0.5,
+         "note": "现场制气项目跟着新增产能走，投资收缩直接压订单"},
+        {"metric": "shibor_on", "label": "Shibor 隔夜", "favor": "below", "threshold": 2.0, "neutral": 0.1,
+         "note": "重资产、靠项目融资，资金成本敏感"}
+      ]
+    },
+    {
+      "id": "auto-exec",
+      "name": "智能驾驶",
+      "link": "汽车消费与居民信贷（可选消费 + 供应链成本）",
+      "drivers": [
+        {"metric": "cal:中国社会消费品零售总额年率", "label": "社零同比", "favor": "above", "threshold": 3.0, "neutral": 0.3,
+         "note": "汽车是社零里权重最大的单项，消费收缩直接压整车与供应链"},
+        {"metric": "cal:中国新增人民币贷款", "label": "新增人民币贷款", "favor": "above", "threshold": 1000, "neutral": 100,
+         "note": "车贷与供应链融资同源，信贷断崖意味着终端加杠杆买车的能力下降（单位：亿元）"},
+        {"metric": "shibor_on", "label": "Shibor 隔夜", "favor": "below", "threshold": 2.0, "neutral": 0.1,
+         "note": "供应链账期长，低资金成本缓解整车厂压价传导"}
+      ]
+    }
+  ]
+}

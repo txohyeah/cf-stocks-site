@@ -230,7 +230,8 @@ async function apiMacro(env) {
 
   // 1) 已公布的发布行（近 1 年），用于"本期体检"与"预期差时间轴"
   const published = (await env.DB.prepare(
-    'SELECT date, time, event, value, fore_value, pre_value, value_num, fore_num, surprise, unit ' +
+    'SELECT date, time, event, value, fore_value, pre_value, value_num, fore_num, surprise, unit, ' +
+    'ref_yoy, ref_yoy_diff, ref_yoy_pct, ref_avg5, ref_avg5_n, pct_rank, pct_rank_n ' +
     'FROM macro_calendar WHERE value IS NOT NULL AND date >= ? ORDER BY date DESC, time DESC'
   ).bind(yearAgo).all()).results;
 
@@ -238,7 +239,9 @@ async function apiMacro(env) {
   for (const m of MACRO_CORE) {
     const hit = published.find(r => r.event.includes(m.kw));
     if (hit) latest[m.key] = { date: hit.date, event: hit.event, value: hit.value, fore_value: hit.fore_value,
-      value_num: hit.value_num, fore_num: hit.fore_num, surprise: hit.surprise, unit: hit.unit };
+      value_num: hit.value_num, fore_num: hit.fore_num, surprise: hit.surprise, unit: hit.unit,
+      ref_yoy: hit.ref_yoy, ref_yoy_diff: hit.ref_yoy_diff, ref_yoy_pct: hit.ref_yoy_pct,
+      ref_avg5: hit.ref_avg5, ref_avg5_n: hit.ref_avg5_n, pct_rank: hit.pct_rank, pct_rank_n: hit.pct_rank_n };
   }
   // 2) 预期差时间轴：最近 12 次社融/信贷发布（按日期升序给前端画图）
   const surprises = published
@@ -274,12 +277,32 @@ async function apiMacro(env) {
     ).all()).results;
   } catch (e) { conditions = []; }
 
+  // 7) 解读笔记（模型/人工撰写，带时间戳；与每天自动刷新的体检卡是两层，表可能尚未建立 → 容错）
+  let notes = [];
+  try {
+    notes = (await env.DB.prepare(
+      'SELECT note_date, kind, created_at, title, body_md, covered, source FROM macro_notes ' +
+      'ORDER BY note_date DESC, kind LIMIT 5'
+    ).all()).results;
+  } catch (e) { notes = []; }
+
+  // 8) 宏观 → 产业 传导（规则表 hand-written，每次同步重算；表可能尚未建立 → 容错）
+  let industries = [];
+  try {
+    industries = (await env.DB.prepare(
+      'SELECT industry_id, name, link, state_kind, state_text, favorable, unfavorable, drivers_json, updated_at ' +
+      'FROM macro_industry_state ORDER BY CASE state_kind WHEN \'favorable\' THEN 0 WHEN \'mixed\' THEN 1 ELSE 2 END, ' +
+      'unfavorable, name'
+    ).all()).results;
+  } catch (e) { industries = []; }
+
   const asOf = (await env.DB.prepare(
     'SELECT (SELECT MAX(date) FROM macro_calendar WHERE value IS NOT NULL) cal, ' +
     '(SELECT MAX(month) FROM macro_series) ser, (SELECT MAX(trade_date) FROM macro_daily) dly'
   ).first()) || {};
 
-  return json({ ok: true, today, as_of: asOf, latest, surprises, series, daily, upcoming, conditions });
+  return json({ ok: true, today, as_of: asOf, latest, surprises, series, daily, upcoming, conditions,
+    notes, industries });
 }
 
 // ---------- admin: 仅 admin，仅游客维护 ----------

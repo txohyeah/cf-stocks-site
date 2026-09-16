@@ -143,6 +143,32 @@ function daysAgo(d, today) {
 function kpiCard(title, valHtml, sub) {
   return `<div class="mc-kpi"><div class="k-name">${esc(title)}</div><div class="k-val">${valHtml}</div><div class="k-sub">${sub}</div></div>`;
 }
+/* 参照系文案（2026-09-16 新增）：分位 + 去年同期 + 历年同期均值。
+   "预期差"只说比机构猜的高还是低，**绝对水平**得看这三个；
+   明确不做环比（社融/信贷/CPI 季节性太强，环比会系统性误导）。 */
+function refText(r) {
+  if (!r || (r.pct_rank == null && r.ref_yoy == null && r.ref_avg5 == null)) return '';
+  const isRate = (r.unit === '%');
+  const fmt = v => (v == null ? '—' : (isRate ? num(v, 2) + '%' : fmtYuan(v)));
+  const bits = [];
+  if (r.pct_rank != null && r.pct_rank_n) {
+    const k = Math.max(1, Math.round(r.pct_rank * r.pct_rank_n));
+    bits.push(`近 ${r.pct_rank_n} 期第 <b>${k}</b> 小（<b>${Math.round(r.pct_rank * 100)}</b> 分位）`);
+  }
+  if (r.ref_yoy != null) {
+    let d = '';
+    if (r.ref_yoy_pct != null) {
+      d = Math.abs(r.ref_yoy_pct) < 0.05 ? '（持平）'
+        : `（${r.ref_yoy_pct > 0 ? '+' : ''}${num(r.ref_yoy_pct, 1)}%）`;
+    } else if (r.ref_yoy_diff != null) {
+      d = Math.abs(r.ref_yoy_diff) < 0.05 ? '（持平）'
+        : `（${r.ref_yoy_diff > 0 ? '+' : ''}${num(r.ref_yoy_diff, 2)} 个百分点）`;
+    }
+    bits.push(`去年同期 ${fmt(r.ref_yoy)}${d}`);
+  }
+  if (r.ref_avg5 != null) bits.push(`${r.ref_avg5_n || 5} 年同期均值 ${fmt(r.ref_avg5)}`);
+  return bits.join(' ｜ ');
+}
 function renderCheckup(d) {
   const today = d.today, out = [];
   const items = Object.keys(d.latest).map(k => Object.assign({ key: k }, d.latest[k]))
@@ -163,7 +189,9 @@ function renderCheckup(d) {
       sub = fore == null ? '无预期数据'
         : `预期 ${fmtYuan(fore)} ｜ <span class="${dv > 0 ? 'mc-up' : (dv < 0 ? 'mc-down' : 'mc-flat')}">${dv > 0 ? '+' : ''}${fmtYuan(dv)}</span>`;
     }
-    out.push(kpiCard(`${x.key} · ${dateCn(x.date).slice(5)}`, valHtml, sub));
+    const ref = refText(x);
+    out.push(kpiCard(`${x.key} · ${dateCn(x.date).slice(5)}`, valHtml,
+      sub + (ref ? `<div class="mc-ref">${ref}</div>` : '')));
   }
   return out.length ? `<div class="mc-kpi-grid">${out.join('')}</div>`
     : '<p class="empty-sm">近 60 天没有已公布的核心指标</p>';
@@ -235,6 +263,85 @@ function renderFramework(d) {
       <b>手工</b>项来自公开新闻（库内无数据源，录入在 scripts/macro_manual.json）。本轮更新：${esc(updated)}。</p>`;
 }
 
+/* ---------- 📝 解读笔记（模型/人工撰写层，与"自动判定层"分开放） ---------- */
+/* 轻量 markdown：段落 / **加粗** / - 列表 / 1. 有序列表（只支持页面实际用到的写法） */
+function mdLite(s) {
+  const inline = t => esc(t).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
+  const html = [];
+  let list = null;                        // 当前累积的列表（有序/无序），逐行解析才能容纳"小标题 + 列表"
+  const flush = () => { if (list) { html.push(`<${list.tag}>${list.items.join('')}</${list.tag}>`); list = null; } };
+  for (const raw of String(s || '').split('\n')) {
+    const line = raw.trim();
+    if (!line) { flush(); continue; }
+    let m = line.match(/^[-•]\s+(.*)$/);
+    if (m) {
+      if (!list || list.tag !== 'ul') { flush(); list = { tag: 'ul', items: [] }; }
+      list.items.push(`<li>${inline(m[1])}</li>`);
+      continue;
+    }
+    m = line.match(/^\d+[.、]\s+(.*)$/);
+    if (m) {
+      if (!list || list.tag !== 'ol') { flush(); list = { tag: 'ol', items: [] }; }
+      list.items.push(`<li>${inline(m[1])}</li>`);
+      continue;
+    }
+    flush();
+    html.push(`<p>${inline(line)}</p>`);
+  }
+  flush();
+  return html.join('');
+}
+function renderNotes(d) {
+  const notes = d.notes || [];
+  if (!notes.length) {
+    return `<p class="empty-sm">还没有解读笔记。笔记由 agent 在"当天有数据发布"时撰写（每月约 8~12 篇），
+      自动判定层（下方体检卡）每天刷新，不受此影响。</p>`;
+  }
+  const one = n => `<article class="note">
+      <h4>${esc(n.title || '未命名笔记')}</h4>
+      <div class="note-meta">数据归属 ${dateCn(n.note_date)} ｜ 撰写于 ${esc((n.created_at || '').slice(0, 16))}
+        ｜ 来源：${n.source === 'human' ? '人工' : '模型（agent）'}${n.covered ? ' ｜ 覆盖：' + esc(n.covered.split(',').length) + ' 项发布' : ''}</div>
+      <div class="note-body">${mdLite(n.body_md)}</div>
+    </article>`;
+  const rest = notes.slice(1);
+  return one(notes[0]) + (rest.length ? `<details class="note-more"><summary>更早的 ${rest.length} 篇</summary>${rest.map(one).join('')}</details>` : '') +
+    `<p class="mc-note">本层是<b>解读</b>（模型按当时数据写成，<b>只在这一层留时间戳</b>，不会随数据自动更新）；
+      下方「🧭 框架条件变量体检」与「本期体检」是<b>自动判定层</b>，每天由脚本重算。两层冲突时以<b>自动层的数据</b>为准，
+      解读只是"当时怎么看"的记录。</p>`;
+}
+
+/* ---------- 🏭 宏观 → 产业 传导（半接：只做方向判定，不做个股买卖） ---------- */
+const IND_SIDE = { favorable: ['✅', '顺风'], unfavorable: ['❌', '逆风'], neutral: ['➖', '中性'], unknown: ['❔', '无数据'] };
+function renderIndustry(d) {
+  const rows = d.industries || [];
+  if (!rows.length) return '<p class="empty-sm">暂未配置产业传导表（scripts/macro_industry.json）</p>';
+  const body = rows.map(r => {
+    let drivers = [];
+    try { drivers = JSON.parse(r.drivers_json || '[]'); } catch (e) { drivers = []; }
+    const dhtml = drivers.map(x => {
+      const [icon, word] = IND_SIDE[x.side] || IND_SIDE.unknown;
+      const cls = x.side === 'favorable' ? 'mc-up' : (x.side === 'unfavorable' ? 'mc-down' : 'mc-flat');
+      return `<div class="ind-drv"><span class="${cls}">${icon} ${word}</span>
+        <b>${esc(x.label)}</b> ${esc(x.value_text)}${x.rule ? ` <span class="muted">（规则 ${esc(x.rule)}）</span>` : ''}
+        ${x.note ? `<div class="ind-note">${esc(x.note)}</div>` : ''}</div>`;
+    }).join('');
+    return `<tr>
+      <td class="ind-name"><a href="/industry/${encodeURIComponent(r.industry_id)}"><b>${esc(r.name)}</b> →</a>
+        <div class="ind-link">${esc(r.link)}</div></td>
+      <td class="ind-state k-${esc(r.state_kind)}">${esc(r.state_text)}</td>
+      <td class="ind-drvs">${dhtml}</td>
+    </tr>`;
+  }).join('');
+  const updated = rows[0].updated_at ? rows[0].updated_at.slice(0, 16) : '—';
+  return `<table class="mc-table mc-ind"><thead><tr><th>产业</th><th>宏观环境</th><th>驱动项（实测值 / 规则 / 为什么传导）</th></tr></thead>
+    <tbody>${body}</tbody></table>
+    <p class="mc-note">这是<b>半接</b>：只回答"现在的宏观环境对这个产业偏顺风还是逆风"——
+      规则写死在 <b>scripts/macro_industry.json</b>（每个驱动项都带实测阈值，可以争论、可以改），每次同步重算，本轮更新 ${esc(updated)}。<br>
+      <b>不做什么</b>：不映射到个股买卖、不给目标价、不替代产业自身的红绿灯（那在
+      <a href="/industries">产业地图</a>里，按渗透率/订单/价格等行业指标判断）。宏观只回答"风向"，产业与个股要靠产业自己的证据。
+      <b>共同项</b>（美债利率、北向、两融、Shibor）对多个产业同时生效，属资金面/风险偏好，不是某个产业的独有逻辑。</p>`;
+}
+
 /* ---------- 预期差时间轴（零轴居中条） ---------- */
 function renderSurprise(d) {
   const rows = d.surprises || [];
@@ -247,6 +354,7 @@ function renderSurprise(d) {
     const left = dv >= 0 ? 50 : 50 - w;
     const tag = /新增人民币贷款|信贷/.test(r.event) ? '信贷' : '社融';
     const tagMonth = (r.event.match(/\((一|二|三|四|五|六|七|八|九|十|十一|十二)月\)/) || [])[1] || '';
+    const ref = refText(r);
     return `<div class="sr-row">
       <span class="sr-label">${dateCn(r.date).slice(5)} ${tag}${tagMonth ? '·' + tagMonth + '月' : ''}</span>
       <span class="sr-bar"><svg viewBox="0 0 100 16" preserveAspectRatio="none">
@@ -254,12 +362,15 @@ function renderSurprise(d) {
         <rect x="${left.toFixed(1)}" y="3" width="${Math.max(0.8, w).toFixed(1)}" height="10" fill="${dv >= 0 ? C_UP : C_DOWN}" rx="1"/>
       </svg></span>
       <span class="sr-val">实际 <b>${fmtYuan(yuan)}</b> ／ 预期 ${fore == null ? '—' : fmtYuan(fore)}
-        <span class="${dv >= 0 ? 'mc-up' : 'mc-down'}">（${dv >= 0 ? '+' : ''}${fmtYuan(dv)}）</span></span>
+        <span class="${dv >= 0 ? 'mc-up' : 'mc-down'}">（${dv >= 0 ? '+' : ''}${fmtYuan(dv)}）</span>
+        ${ref ? `<div class="mc-ref">${ref}</div>` : ''}</span>
     </div>`;
   }).join('');
   return `<div class="sr-list">${body}</div>
     <p class="mc-note">柱子方向 = 实际减预期：<span class="mc-up">向右（绿）为超预期</span>、<span class="mc-down">向左（红）为不及预期</span>。
-      社融/信贷是按月发布的<b>单月增量</b>（如 1,660.0B = 1.66 万亿），不是存量增速。</p>`;
+      社融/信贷是按月发布的<b>单月增量</b>（如 1,660.0B = 1.66 万亿），不是存量增速。
+      每行小字是<b>绝对水平</b>的参照：近 12 期分位、去年同期、历年同期均值 ——
+      预期差只说明"比机构猜的高还是低"，这两列才说明"这个数本身算不算弱"。</p>`;
 }
 
 /* ---------- 月度趋势 ---------- */
@@ -342,8 +453,12 @@ async function load() {
   document.getElementById('mc-body').innerHTML = `
     <div class="mc-panel mc-panel-cond"><h3>🧭 框架条件变量体检 <span class="muted" style="font-size:12px">这篇文章说"什么情况下我错了"——这里每天对一次账</span></h3>
       ${renderFramework(d)}</div>
-    <div class="mc-panel"><h3>本期体检 <span class="muted" style="font-size:12px">近 60 天已公布的核心指标（实际 vs 市场预期）</span></h3>
+    <div class="mc-panel mc-panel-note"><h3>📝 解读笔记 <span class="muted" style="font-size:12px">有数据发布时才写（模型撰写，带时间戳）——自动判定层在下方</span></h3>
+      ${renderNotes(d)}</div>
+    <div class="mc-panel"><h3>本期体检 <span class="muted" style="font-size:12px">近 60 天已公布的核心指标：实际 vs 市场预期，再给绝对水平的参照（分位 / 去年同期 / 历年同期均值）</span></h3>
       ${renderCheckup(d)}</div>
+    <div class="mc-panel"><h3>🏭 宏观 → 产业 传导 <span class="muted" style="font-size:12px">半接：只判定顺风/逆风，不落到个股买卖</span></h3>
+      ${renderIndustry(d)}</div>
     <div class="mc-panel"><h3>货币与资金面</h3>${renderMoney(d)}</div>
     <div class="mc-panel"><h3>预期差时间轴 <span class="muted" style="font-size:12px">最近 12 次社融 / 信贷发布</span></h3>
       ${renderSurprise(d)}</div>
@@ -357,6 +472,12 @@ async function load() {
         fut_basic(IPE/NYMEX) 为空），经 stock-analytics 落库后由 <b>scripts/sync_macro.py</b> 每日同步到本站 D1。<br>
         <b>口径</b>：社融、信贷为按月发布的<b>单月增量</b>（如 2026-08 社融 1,660.0B = 1.66 万亿），不是存量；"预期"为发布前市场一致预期，
         两者之差即"预期差"。预期差的<b>方向</b>只说明数据比预期强或弱，不构成对指数或个股方向的判断。<br>
+        <b>参照系</b>：预期差之外还有三个<b>绝对水平</b>的参照——
+        <b>近 12 期分位</b>（把最近 12 次发布按数值从小到大排队，本期排第几小、处在百分之几分位；越大越强）、
+        <b>去年同期</b>（同一个月跟去年同一个月比：金额口径给变化率 %，比率口径给百分点差）、
+        <b>历年同期均值</b>（前 1~5 年同一月份的平均值，用来把季节性影响拆掉）。
+        三条都按<b>数据月份</b>对齐（不按发布日期，发布日期每年会漂几天）；分位不足 6 期、均值不足 3 年时留空，宁缺勿假。
+        <b>不做环比</b>：社融/信贷/CPI 的季节性极强（1 月总是天量、7 月总是低），跟上个月比会系统性误导，要拆季节性看"历年同期均值"。<br>
         <b>前瞻</b>：发布日历含未来已排期事件（值为空），公布后自动补上实际值；未来日程按当前已排期展示，临时调整以交易所/统计局公告为准。<br>
         <b>定位</b>：本页只摆宏观数据，不产生买卖信号；判断一律回到"聪明钱"与个股产业定位。<br>
         <b>免责</b>：数据可能存在延迟、缺失或修正，仅供研究参考，不构成投资建议。

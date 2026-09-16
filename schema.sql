@@ -171,9 +171,57 @@ CREATE TABLE IF NOT EXISTS macro_calendar (
   pre_num REAL,
   surprise REAL,                           -- value_num - fore_num（预期差）
   unit TEXT DEFAULT '',                    -- B=十亿 / T=万亿 / M=百万 / %=百分点 / ''=原值
+  -- 参照系列（2026-09-16 晚新增；由 sync_macro.py 按"数据月份"对齐算出，非数据源字段）
+  ref_yoy REAL,                            -- 去年同期值（同月对齐，不按发布日期）
+  ref_yoy_diff REAL,                       -- 本期 − 去年同期（金额口径=金额差；% 口径=百分点差）
+  ref_yoy_pct REAL,                        -- 变化率%（仅金额口径；% 口径为 NULL，避免"同比的同比"）
+  ref_avg5 REAL,                           -- 历年同期均值（前 1~5 年同月，≥3 年才给）
+  ref_avg5_n INTEGER,                      -- 参与均值的年数
+  pct_rank REAL,                           -- 近 12 期分位：升序中"≤本期"的期数 ÷ 期数（越大越强）
+  pct_rank_n INTEGER,                      -- 分位窗口实际期数（<6 期不给分位）
   PRIMARY KEY (date, time, event)
 );
+-- ⚠️ 明确不做环比（mom）：社融/信贷/CPI 季节性极强，环比会系统性误导（要看季节性用 ref_avg5）
+-- 已建库的存量升级（一次性；D1 报 duplicate column 即已升过）：
+--   ALTER TABLE macro_calendar ADD COLUMN ref_yoy REAL;
+--   ALTER TABLE macro_calendar ADD COLUMN ref_yoy_diff REAL;
+--   ALTER TABLE macro_calendar ADD COLUMN ref_yoy_pct REAL;
+--   ALTER TABLE macro_calendar ADD COLUMN ref_avg5 REAL;
+--   ALTER TABLE macro_calendar ADD COLUMN ref_avg5_n INTEGER;
+--   ALTER TABLE macro_calendar ADD COLUMN pct_rank REAL;
+--   ALTER TABLE macro_calendar ADD COLUMN pct_rank_n INTEGER;
 CREATE INDEX IF NOT EXISTS idx_macro_cal_date ON macro_calendar(date);
+
+-- ★ 宏观：解读笔记（2026-09-16 晚新增，b 档"我定期写"层）
+-- 页面上分两层：**自动判定层**（macro_conditions 体检卡，每天由 sync_macro.py 刷新）
+-- 与 **解读笔记层**（本表，由 agent cron 在"当天有数据发布"时写入，带撰写时间戳）。
+-- 写笔记的工具：scripts/macro_note.py（check 判断今天有没有新发布 / save 落库）
+CREATE TABLE IF NOT EXISTS macro_notes (
+  note_date TEXT NOT NULL,                 -- 归属日期 YYYYMMDD（= 数据发布日或周记日）
+  kind TEXT NOT NULL DEFAULT 'release',    -- release=数据发布解读 / weekly=周记
+  created_at TEXT NOT NULL,                -- 撰写时间（页面显示"最后更新于"）
+  title TEXT DEFAULT '',
+  body_md TEXT NOT NULL,                   -- 正文（轻量 markdown：段落 / - 列表 / **加粗**）
+  covered TEXT DEFAULT '',                 -- 覆盖的发布事件（逗号分隔，便于回溯）
+  as_of TEXT DEFAULT '',                   -- 数据口径截点（YYYYMMDD）
+  source TEXT DEFAULT 'agent',             -- agent=模型撰写 / human=人工撰写
+  PRIMARY KEY (note_date, kind)
+);
+
+-- ★ 宏观 → 产业 传导（2026-09-16 晚新增；规则表在 scripts/macro_industry.json）
+-- 每个产业一行：当前宏观环境对它偏顺风还是偏逆风 + 逐条驱动项（实测值/规则/理由）。
+-- 定位：只做**方向判定**，不映射到个股买卖；产业自身的红绿灯仍在 /industries。
+CREATE TABLE IF NOT EXISTS macro_industry_state (
+  industry_id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  link TEXT DEFAULT '',                    -- 传导链条的一句话描述
+  state_kind TEXT DEFAULT 'mixed',         -- favorable / unfavorable / mixed
+  state_text TEXT DEFAULT '',              -- 如"偏顺风（2 顺 / 1 逆）"
+  favorable INTEGER DEFAULT 0,
+  unfavorable INTEGER DEFAULT 0,
+  drivers_json TEXT DEFAULT '[]',          -- [{label,value_text,side,rule,note,date}]
+  updated_at TEXT
+);
 
 -- ★ 宏观：月度/季度序列（长表：一个指标一行，加指标不用改 schema）
 -- indicator：社融增量 / 社融存量 / M1同比 / M2同比 / M1M2剪刀差 / CPI同比 / PPI同比 / GDP同比

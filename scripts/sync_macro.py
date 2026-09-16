@@ -7,7 +7,7 @@
   python3 scripts/sync_macro.py --exec --daily-full    # 首次上线：日频全量灌历史
 
 三张表（DDL 见 schema.sql）：
-  macro_calendar  数据发布日历（含未来排期）——**全量 UPSERT**（约 2.9k 行，规模小、语义最稳）
+  macro_calendar  数据发布日历（含未来排期）+ 参照系（同比/近 12 期分位/历年同期均值）——**全量 UPSERT**
   macro_series    月度/季度序列（社融/货币/物价/GDP）——全量 UPSERT
   macro_daily     日频（Shibor 隔夜/两融余额/北向净买）——默认近 30 天，--daily-full 才全量
 
@@ -22,6 +22,7 @@
 import argparse
 import json
 import os
+import re
 import sqlite3
 import sys
 from datetime import datetime, timedelta
@@ -34,8 +35,29 @@ OUT = os.path.join(ROOT, 'data', 'macro_sync.sql')
 BATCH = 100  # D1 单条语句有长度上限（SQLITE_TOOBIG），分批
 DAILY_LOOKBACK_DAYS = 400  # 滚动窗口：够页面画 250 点趋势，也不让 D1 无限膨胀（2026-09-16 由 30 调大）
 
-CAL_COLS = ['date', 'time', 'event', 'value', 'fore_value', 'pre_value',
-            'value_num', 'fore_num', 'pre_num', 'surprise', 'unit']
+BASE_CAL_COLS = ['date', 'time', 'event', 'value', 'fore_value', 'pre_value',
+                 'value_num', 'fore_num', 'pre_num', 'surprise', 'unit']
+# 参照系列（2026-09-16 新增）：让"预期差"之外多一个**绝对水平**的判断依据。
+#   ref_yoy      去年同期值（按"数据月份"对齐，不按发布日期）
+#   ref_yoy_diff 本期 − 去年同期（金额口径=金额差；% 口径=百分点差）
+#   ref_yoy_pct  变化率%（仅金额口径有意义；% 口径留空，避免"同比的同比"）
+#   ref_avg5     历年同期均值（前 1~5 年同月，≥3 年才给）
+#   pct_rank     近 12 期分位：升序里"≤本期"的期数 ÷ 期数（0~1；越大越强）
+#   pct_rank_n   分位窗口实际期数（<6 期不给分位，宁缺勿假）
+# ⚠️ 明确**不做环比**（mom）：社融/信贷/CPI 季节性极强（1 月天量、7 月低），
+#    环比会系统性误导；要拆季节性看 ref_avg5。
+CAL_COLS = BASE_CAL_COLS + ['ref_yoy', 'ref_yoy_diff', 'ref_yoy_pct',
+                            'ref_avg5', 'ref_avg5_n', 'pct_rank', 'pct_rank_n']
+
+# 事件名末尾的月份后缀（"中国CPI年率(%)(年度)(八月)"）——同一个指标跨年只能靠它合并
+_MONTH_SUFFIX_RE = re.compile(r'\((一月|二月|三月|四月|五月|六月|七月|八月|九月|十月|十一月|十二月)\)\s*$')
+_CN_MONTHS = {'一月': 1, '二月': 2, '三月': 3, '四月': 4, '五月': 5, '六月': 6,
+              '七月': 7, '八月': 8, '九月': 9, '十月': 10, '十一月': 11, '十二月': 12}
+PCT_RANK_WINDOW = 12   # 分位窗口：近 12 期
+PCT_RANK_MIN = 6       # 窗口少于 6 期不给分位
+REF_YOY_TOL_DAYS = 35  # 去年同期按数据月份匹配失败时，退化为发布日期匹配的容差
+REF_AVG_YEARS = 5      # 历年同期均值回溯年数
+REF_AVG_MIN = 3        # 至少匹配到几年才给均值
 SERIES_COLS = ['month', 'indicator', 'value', 'unit']
 DAILY_COLS = ['trade_date', 'indicator', 'value', 'unit']
 
@@ -54,9 +76,84 @@ def connect():
     return sqlite3.connect(f'file:{STOCK_ANALYTICS_DB}?mode=ro', uri=True)
 
 
+def series_key(event):
+    """指标名归一：剥掉事件名末尾的月份后缀，跨年才能合成一条序列。
+
+    '中国CPI年率(%)(年度)(八月)' → '中国CPI年率(%)(年度)'
+    实测（2026-09-16）归一后 41 条序列，社融/信贷/CPI/PPI/M2/PMI 等主序列都干净。
+    """
+    return _MONTH_SUFFIX_RE.sub('', str(event)).strip()
+
+
+def data_month(date, event):
+    """这次发布对应的**数据月份** 'YYYYMM'（同比/同月均值按它对齐，比发布日期稳）。
+
+    带月份后缀的用后缀（跨年按"数据月不能晚于发布月"回推一年）；
+    不带后缀的老行（2019-2021 那批）按发布月 −1 推。
+    """
+    y, m = int(date[:4]), int(date[4:6])
+    hit = _MONTH_SUFFIX_RE.search(str(event))
+    if hit:
+        dm = _CN_MONTHS[hit.group(1)]
+        if dm > m:
+            y -= 1
+        return f'{y:04d}{dm:02d}'
+    if m == 1:
+        return f'{y - 1:04d}12'
+    return f'{y:04d}{m - 1:02d}'
+
+
+def derive_refs(rows):
+    """按序列算出每行的参照系 → {(date, time, event): (ref_yoy, diff, pct, avg5, avg5_n, rank, rank_n)}。
+
+    只对"有实际值"的行算；分位窗口只用该行**当时已公布**的期数（trailing），
+    所以历史行是"当时的视角"，最新行自然就是"近 12 期"。
+    """
+    from collections import defaultdict
+
+    series = defaultdict(dict)   # 序列 key → {数据月份: (发布日期, 值, 单位)}
+    for r in rows:
+        date, event, vnum = r[0], r[2], r[6]
+        if vnum is None:
+            continue
+        k, dm = series_key(event), data_month(date, event)
+        cur = series[k].get(dm)
+        # 同一数据月可能有两行（老的无后缀行 + 新的带后缀行；2026-09-16 实测 5 条序列有）
+        # → 每数据月只留一条，冲突时保留发布日期更早的
+        if cur is None or date < cur[0]:
+            series[k][dm] = (date, float(vnum), r[10])
+
+    seq_of = {k: sorted(v.items()) for k, v in series.items()}   # [(数据月份, (日期, 值, 单位))]
+
+    ref_map = {}
+    for k, seq in seq_of.items():
+        months = [dm for dm, _ in seq]
+        vals = [t[1][1] for t in seq]
+        idx = {dm: i for i, dm in enumerate(months)}
+        for i, (dm, (date, val, unit)) in enumerate(seq):
+            yr, mo = int(dm[:4]), dm[4:]
+            prev_m = f'{yr - 1:04d}{mo}'
+            ref_yoy = vals[idx[prev_m]] if prev_m in idx else None
+            hist = [vals[idx[f'{yr - k:04d}{mo}']] for k in range(1, REF_AVG_YEARS + 1)
+                    if f'{yr - k:04d}{mo}' in idx]
+            avg5 = (sum(hist) / len(hist)) if len(hist) >= REF_AVG_MIN else None
+            win = vals[max(0, i - PCT_RANK_WINDOW + 1): i + 1]
+            rank = (sum(1 for x in win if x <= val) / len(win)) if len(win) >= PCT_RANK_MIN else None
+            diff = None if ref_yoy is None else val - ref_yoy
+            pct = ((val - ref_yoy) / abs(ref_yoy) * 100
+                   if (ref_yoy not in (None, 0) and unit != '%') else None)
+            ref_map[(date, k)] = (ref_yoy, diff, pct, avg5, len(hist), rank, len(win))
+
+    return {(r[0], r[1], r[2]): ref_map.get((r[0], series_key(r[2])))
+            for r in rows if r[6] is not None}
+
+
 def calendar_rows(conn):
-    sql = f"SELECT {', '.join(CAL_COLS)} FROM macro_calendar ORDER BY date, time, event"
-    return list(conn.execute(sql))
+    """发布日历（基础列 + 现算的参照系列）。"""
+    sql = f"SELECT {', '.join(BASE_CAL_COLS)} FROM macro_calendar ORDER BY date, time, event"
+    rows = list(conn.execute(sql))
+    refs = derive_refs(rows)
+    return [tuple(r) + (refs.get((r[0], r[1], r[2])) or (None,) * 7) for r in rows]
 
 
 def series_rows(conn):
@@ -259,6 +356,122 @@ def condition_rows(conn, now):
     return rows
 
 
+# ---- 宏观 → 产业 传导（2026-09-16 新增；规则表在 scripts/macro_industry.json，改规则不用改代码）----
+IND_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'macro_industry.json')
+IND_COLS = ['industry_id', 'name', 'link', 'state_kind', 'state_text',
+            'favorable', 'unfavorable', 'drivers_json', 'updated_at']
+
+# 发布日历类指标的"阈值单位"：JSON 里的阈值按这个口径写（社融用万亿、信贷用亿、比率用原值）
+CAL_SCALE = {
+    '中国社会融资规模': (1e12, '万亿'),
+    '中国新增人民币贷款': (1e8, '亿'),
+}
+
+
+def load_industry_map():
+    with open(IND_PATH, encoding='utf-8') as f:
+        return json.load(f).get('industries', [])
+
+
+def metric_values(conn):
+    """所有可测驱动指标 → {metric: (数值, 展示文案, 日期)}。数值单位与 JSON 阈值口径一致。"""
+    m = {}
+    r = conn.execute("SELECT date, close FROM oil_global WHERE symbol='BRENT' ORDER BY date DESC LIMIT 1").fetchone()
+    if r:
+        m['brent'] = (float(r[1]), f'{r[1]:.2f} 美元/桶', r[0])
+        streak, since = 0, None
+        for d, c in conn.execute("SELECT date, close FROM oil_global WHERE symbol='BRENT' ORDER BY date DESC"):
+            if c is not None and float(c) >= 95:
+                streak += 1
+                since = d
+            else:
+                break
+        m['brent_streak95'] = (streak, f'连续 {streak} 个交易日 ≥95 美元（{since} 起）', r[0])
+    r = conn.execute('SELECT date, y10, y2 FROM us_tycr ORDER BY date DESC LIMIT 1').fetchone()
+    if r:
+        if r[1] is not None:
+            m['us10y'] = (float(r[1]), f'{r[1]:.2f}%', r[0])
+        if r[2] is not None:
+            m['us2y'] = (float(r[2]), f'{r[2]:.2f}%', r[0])
+    r = conn.execute('SELECT trade_date, bid_close FROM fx_daily ORDER BY trade_date DESC LIMIT 1').fetchone()
+    if r:
+        m['cnh'] = (float(r[1]), f'{r[1]:.4f}', r[0])
+    r = conn.execute('SELECT date, "on" FROM shibor ORDER BY date DESC LIMIT 1').fetchone()
+    if r:
+        m['shibor_on'] = (float(r[1]), f'{r[1]:.2f}%', r[0])
+    r = conn.execute('SELECT trade_date, SUM(rzye + rqye) / 1e12 FROM margin '
+                     'GROUP BY trade_date ORDER BY trade_date DESC LIMIT 1').fetchone()
+    if r:
+        m['margin_total'] = (float(r[1]), f'{r[1]:.2f} 万亿', r[0])
+    r = conn.execute('SELECT COUNT(*), SUM(north_money) / 1e4, MAX(trade_date) FROM ('
+                     'SELECT trade_date, north_money FROM moneyflow_hsgt ORDER BY trade_date DESC LIMIT 20)').fetchone()
+    if r and r[0]:
+        m['north20'] = (float(r[1]), f'近 {r[0]} 日累计 {r[1]:+,.0f} 亿元', r[2])
+    r = conn.execute('SELECT month, m1_yoy - m2_yoy FROM cn_m ORDER BY month DESC LIMIT 1').fetchone()
+    if r:
+        m['series:M1M2剪刀差'] = (float(r[1]), f'{r[1]:+.1f} 个百分点（{r[0]}）', r[0])
+    return m
+
+
+def cal_metric(conn, kw):
+    """发布日历里某事件最新一次公布值 → (数值, 文案, 日期)，单位按 CAL_SCALE 换算。"""
+    r = conn.execute(
+        "SELECT date, value_num, unit FROM macro_calendar WHERE event LIKE ? AND value IS NOT NULL "
+        'ORDER BY date DESC LIMIT 1', (kw + '%',)).fetchone()
+    if not r:
+        return None
+    scale, unit = CAL_SCALE.get(kw, (1.0, r[2]))
+    v = float(r[1]) / scale
+    if unit == '%':
+        text = f'{v:.2f}%'
+    elif unit == '万亿':
+        text = f'{v:.2f} 万亿'
+    elif unit == '亿':
+        text = f'{v:,.0f} 亿'
+    elif unit:
+        text = f'{v:,.2f} {unit}'
+    else:
+        text = f'{v:,.2f}'
+    return (v, text, r[0])
+
+
+def industry_rows(conn, now):
+    """按规则表评估每个产业的宏观顺风/逆风 → macro_industry_state 行。"""
+    m = metric_values(conn)
+    rows = []
+    for ind in load_industry_map():
+        drivers, fav, unfav = [], 0, 0
+        for d in ind.get('drivers', []):
+            metric = d['metric']
+            hit = m.get(metric) or (cal_metric(conn, metric[4:]) if metric.startswith('cal:') else None)
+            if not hit:
+                drivers.append({'label': d.get('label', metric), 'value_text': '无数据', 'side': 'unknown',
+                                'note': d.get('note', '')})
+                continue
+            v, text, date = hit
+            thr, band = float(d['threshold']), float(d.get('neutral', 0) or 0)
+            if band and abs(v - thr) <= band:
+                side = 'neutral'
+            elif d['favor'] == 'above':
+                side = 'favorable' if v >= thr else 'unfavorable'
+            else:
+                side = 'favorable' if v <= thr else 'unfavorable'
+            fav += side == 'favorable'
+            unfav += side == 'unfavorable'
+            cmp_text = ('≥' if d['favor'] == 'above' else '≤') + f'{thr:g}'
+            drivers.append({'label': d.get('label', metric), 'value_text': text,
+                            'side': side, 'rule': cmp_text, 'note': d.get('note', ''), 'date': date})
+        if fav > unfav:
+            kind, state = 'favorable', f'偏顺风（{fav} 顺 / {unfav} 逆）'
+        elif unfav > fav:
+            kind, state = 'unfavorable', f'偏逆风（{fav} 顺 / {unfav} 逆）'
+        else:
+            kind, state = 'mixed', f'分化（{fav} 顺 / {unfav} 逆）'
+        rows.append((ind['id'], ind['name'], ind.get('link', ''), kind, state, fav, unfav,
+                     json.dumps(drivers, ensure_ascii=False), now))
+    return rows
+
+
 def insert_stmts(table, cols, rows, conflict_cols):
     """生成分批 INSERT ... ON CONFLICT DO UPDATE（幂等；表内不 DELETE，避免半途失败露空窗）。"""
     if not rows:
@@ -303,6 +516,14 @@ def verify(db):
          'SELECT COUNT(DISTINCT indicator) n, MAX(trade_date) latest FROM macro_daily'),
         ('macro_conditions 条件数与状态分布',
          'SELECT COUNT(*) n, GROUP_CONCAT(status_kind) kinds FROM macro_conditions'),
+        ('参照系覆盖（有实际值的行中已算出分位/同比的行数）',
+         'SELECT COUNT(*) filled, SUM(pct_rank IS NOT NULL) has_rank, SUM(ref_yoy IS NOT NULL) has_yoy, '
+         'SUM(ref_avg5 IS NOT NULL) has_avg5 FROM macro_calendar WHERE value IS NOT NULL'),
+        ('macro_industry_state 产业数与状态分布',
+         'SELECT COUNT(*) n, GROUP_CONCAT(state_text) kinds FROM macro_industry_state'),
+        ('最新社融的参照系（应：去年同期 + 分位 + 历年同期均值）',
+         "SELECT date, pct_rank, pct_rank_n FROM macro_calendar WHERE event LIKE '中国社会融资规模%' "
+         'AND value IS NOT NULL ORDER BY date DESC LIMIT 1'),
     ]
     for label, sql in checks:
         ok, rows, _m, err = cf_d1.execute_sql(db, sql)
@@ -326,6 +547,7 @@ def main():
     daily = daily_rows(conn, since)
     now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     cond = condition_rows(conn, now)   # 条件变量体检（依赖 now 作 updated_at）
+    ind = industry_rows(conn, now)     # 宏观 → 产业 传导（规则表 scripts/macro_industry.json）
     conn.close()
 
     header = [f'-- 宏观数据（sync_macro.py 生成 {now}）',
@@ -336,6 +558,7 @@ def main():
     stmts += insert_stmts('macro_series', SERIES_COLS, series, ['month', 'indicator'])
     stmts += insert_stmts('macro_daily', DAILY_COLS, daily, ['trade_date', 'indicator'])
     stmts += insert_stmts('macro_conditions', COND_COLS, cond, ['cond_key'])
+    stmts += insert_stmts('macro_industry_state', IND_COLS, ind, ['industry_id'])
 
     # 注释块放在文件头且**不单独成句**（否则 cf_d1 exec 会把注释当语句执行）
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
