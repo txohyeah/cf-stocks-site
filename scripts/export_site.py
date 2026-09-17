@@ -27,7 +27,10 @@
     pe_history 用 (行数, 最新交易日, PE 求和取 2 位小数) 做指纹（抓得住变化、不吃浮点噪声）。
   - DELETE 一律带 WHERE 且只针对该股票；pe_history 干脆不删，改 UPSERT
   - 护栏 1：生成结果里若出现无 WHERE 的 DELETE，直接报错退出（自检）
-  - 护栏 2：预计写行数超过 MAX_WRITE_ROWS 时拒绝生成，除非显式 --allow-bulk
+  - 护栏 2：预计**吃掉的写额度**超过 MAX_WRITE_ROWS 时拒绝生成，除非显式 --allow-bulk
+    ⚠️ 实测口径（2026-09-17 受控实验）：D1 的 rows_written 里 **INSERT 一行记 2 单位**
+    （表和索引各一），**DELETE 一行记 1 单位**。所以一次"12,996 行 pe 插入"实际吃掉
+    25,992 额度。估算请用 INSERT×2 + DELETE×1，别按行数直接算。
 ======================================================================
 """
 import argparse
@@ -53,6 +56,11 @@ INSERT_BATCH = 800        # 每条 INSERT 的 VALUES 行数（~80KB/条，D1 bod
 MAX_WRITE_ROWS = 20000    # 单次生成的写行数上限（超过需 --allow-bulk）
 FIN_PERIODS = ['20241231', '20251231', '20260331', '20260630']   # 财务表列：2024/2025/2026Q1/2026H1
 FIN_LABELS = ['2024', '2025', '2026Q1', '2026H1']
+# 财务模块不覆盖名单：D1 上这只的 finance 模块是人工加料过的（多一列 2023 年 + 同比%、10 行），
+# 脚本版只有 4 期 5 行的通用表 —— 跑一次会把人工内容降级掉，所以跳过。
+# 2026-09-17 检查：55 只差异里 48 只是 D1 完全没有（补上=净收益）、6 只只是序列化长度不同（无害）、
+# 只有这一只是"手改得更丰富"。
+FIN_SKIP = {'301611.SZ'}
 
 
 def q(s):
@@ -264,6 +272,8 @@ def build_finance_modules(cur):
     placeholders = ','.join('?' * len(FIN_PERIODS))
     for s in load_stocks():
         code = s['code']
+        if code in FIN_SKIP:
+            continue
         income = {r[0]: r for r in cur.execute(
             f"SELECT end_date, n_income_attr_p, basic_eps, total_revenue FROM income "
             f"WHERE ts_code=? AND report_type='1' AND end_date IN ({placeholders})", (code, *FIN_PERIODS))}
@@ -292,8 +302,12 @@ def build_finance_modules(cur):
         data = json.dumps({'headers': ['指标'] + FIN_LABELS, 'rows': rows}, ensure_ascii=False)
         sm = ("INSERT INTO stock_modules (stock_code, module_key, title, template_key, sort_order, visible) VALUES "
               f"('{q(code)}', 'finance', '关键财务数据', 'finance', 1, 1);")
-        mb = ("INSERT INTO module_blocks (module_id, block_type, data_json, sort_order) VALUES "
-              f"(last_insert_rowid(), 'table', '{q(data)}', 0);")
+        # ⚠️ 不能写 last_insert_rowid()：cf_d1.exec 是**逐条**发请求的（每条一个连接），
+        #    上一条 INSERT 的 last_row_id 在这里拿不到 —— 原写法会把 module_id 写成 0（挂不到模块上）。
+        #    改成 INSERT ... SELECT，从 stock_modules 里取回 id，独立可靠。
+        mb = ("INSERT INTO module_blocks (module_id, block_type, data_json, sort_order) "
+              f"SELECT id, 'table', '{q(data)}', 0 FROM stock_modules "
+              f"WHERE stock_code = '{q(code)}' AND module_key = 'finance';")
         out[code] = ((1, len(data)), sm, mb)
     return out
 
@@ -307,28 +321,29 @@ def chunks(rows):
 
 
 def emit(table, cols, picked, header, per_code_delete=False, upsert=False):
-    """把 {code: (指纹, 行)} 生成 SQL。返回 (语句列表, 写入行数估算)。"""
+    """把 {code: (指纹, 行)} 生成 SQL。返回 (语句列表, 插入行数, 删除行数)。"""
     if not picked:
-        return [], 0
+        return [], 0, 0
     stmts = [f'-- {header}（{len(picked)} 只）']
-    n = 0
+    n_ins = 0
+    n_del = 0
     for code in sorted(picked):
         rows = picked[code][1]
         if per_code_delete:
             stmts.append(f"DELETE FROM {table} WHERE stock_code = '{q(code)}';")
-            n += len(rows)     # DELETE 也计写（按删除行数），按"最多删这么多"估
+            n_del += len(rows)     # 按"最多删这么多"估
         for ch in chunks(rows):
             tail = ' ON CONFLICT(stock_code, trade_date) DO UPDATE SET pe_ttm = excluded.pe_ttm' if upsert else ''
             stmts.append(f"INSERT INTO {table} ({cols}) VALUES\n" + ",\n".join(ch) + ";" + tail)
-        n += len(rows)
-    return stmts, n
+        n_ins += len(rows)
+    return stmts, n_ins, n_del
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--full', action='store_true', help='全量导出（空库重建用），不做 D1 差异比对')
     ap.add_argument('--dry-run', action='store_true', help='只统计不写文件')
-    ap.add_argument('--allow-bulk', action='store_true', help=f'允许超过 {MAX_WRITE_ROWS} 行的批量生成')
+    ap.add_argument('--allow-bulk', action='store_true', help=f'允许预计吃掉超过 {MAX_WRITE_ROWS} 单位写额度的生成')
     args = ap.parse_args()
 
     db = find_db()
@@ -342,21 +357,22 @@ def main():
         state = d1_state(db)
 
     parts = ['-- stocks 站点 P2 详情种子 v2（export_site.py 生成）--']
-    stats, total = [], 0
+    stats = []
+    total_ins = total_del = 0
 
     s = pick(build_industry_lines(), state['industry_lines'], args.full)
-    st, n = emit('industry_lines', 'stock_code, line_id, position, weight, lineCat, segment, note, sort_order',
-                 s, 'industry_lines（含 lineCat）', per_code_delete=True)
+    st, ni, nd = emit('industry_lines', 'stock_code, line_id, position, weight, lineCat, segment, note, sort_order',
+                      s, 'industry_lines（含 lineCat）', per_code_delete=True)
     parts += [''] + st
-    stats.append(('industry_lines', len(s), len(s), n))
-    total += n
+    stats.append(('industry_lines', len(s), len(s), ni, nd))
+    total_ins += ni; total_del += nd
 
     s = pick(build_tracking_rules(), state['tracking_rules'], args.full)
-    st, n = emit('tracking_rules', 'stock_code, dimension, indicator, red, yellow, green, sort_order',
-                 s, 'tracking_rules（行业红绿灯）', per_code_delete=True)
+    st, ni, nd = emit('tracking_rules', 'stock_code, dimension, indicator, red, yellow, green, sort_order',
+                      s, 'tracking_rules（行业红绿灯）', per_code_delete=True)
     parts += [''] + st
-    stats.append(('tracking_rules', len(s), len(s), n))
-    total += n
+    stats.append(('tracking_rules', len(s), len(s), ni, nd))
+    total_ins += ni; total_del += nd
 
     con = sqlite3.connect('file:' + ANALYTICS_DB + '?mode=ro', uri=True)
     cur = con.cursor()
@@ -368,22 +384,23 @@ def main():
     d1pe = {} if args.full else fetch_d1_pe(db, list(s))
     st, n, n_codes = emit_pe_history(s, d1pe, args.full)
     parts += [''] + st
-    stats.append(('pe_history', n_codes, len(pe_built), n))
-    total += n
+    stats.append(('pe_history', n_codes, len(pe_built), n, 0))
+    total_ins += n
 
-    s = pick(build_tracking_data(per), state['tracking_data'], args.full)
-    st, n = emit('tracking_data', 'stock_code, dimension, value, as_of', s, 'tracking_data（9 维）',
-                 per_code_delete=True)
+    td_built = build_tracking_data(per)
+    s = pick(td_built, state['tracking_data'], args.full)
+    st, ni, nd = emit('tracking_data', 'stock_code, dimension, value, as_of', s, 'tracking_data（9 维）',
+                      per_code_delete=True)
     parts += [''] + st
-    stats.append(('tracking_data', len(s), len(build_tracking_data(per)), n))
-    total += n
+    stats.append(('tracking_data', len(s), len(td_built), ni, nd))
+    total_ins += ni; total_del += nd
 
     fin = build_finance_modules(cur)
     con.close()
     s = pick(fin, state['finance'], args.full)
     if s:
         st = [f'-- 财务模块（stock_modules + module_blocks，{len(s)} 只；DELETE 按 code+module_key 收窄）']
-        fn = 0
+        fi = fd = 0      # 财务模块每只：删 2 行 + 插 2 行
         for code in sorted(s):
             st.append("DELETE FROM module_blocks WHERE module_id IN "
                       f"(SELECT id FROM stock_modules WHERE stock_code = '{q(code)}' AND module_key = 'finance');")
@@ -391,10 +408,10 @@ def main():
                       f"'{q(code)}' AND module_key = 'finance';")
             st.append(s[code][1])
             st.append(s[code][2])
-            fn += 2
+            fi += 2; fd += 2
         parts += [''] + st
-        stats.append(('财务模块', len(s), len(fin), fn))
-        total += fn
+        stats.append(('财务模块', len(s), len(fin), fi, fd))
+        total_ins += fi; total_del += fd
 
     sql_text = '\n'.join(parts)
 
@@ -404,14 +421,17 @@ def main():
         print(f'[FAIL] 生成结果里出现无 WHERE 的 DELETE（会清表）：{bad}')
         raise SystemExit(1)
 
-    # 护栏 2：写行数上限
+    # 护栏 2：写额度上限（按实测口径：INSERT 每行吃 2 单位、DELETE 每行吃 1 单位）
+    cost = total_ins * 2 + total_del
     print()
-    print(f'{"表":<16}{"本次写":>8}{"总量":>8}{"估算写行数":>12}')
-    for name, n_changed, n_all, n_rows in stats:
-        print(f'{name:<16}{n_changed:>8}{n_all:>8}{n_rows:>12,}')
-    print(f'{"合计":<16}{"":>8}{"":>8}{total:>12,}')
-    if total > MAX_WRITE_ROWS and not args.allow_bulk:
-        print(f'\n[FAIL] 估算写 {total:,} 行，超过上限 {MAX_WRITE_ROWS:,}（D1 免费版日额度 100,000 行写）。')
+    print(f'{"表":<16}{"本次写":>8}{"总量":>8}{"插入":>10}{"删除":>8}')
+    for name, n_changed, n_all, ni, nd in stats:
+        print(f'{name:<16}{n_changed:>8}{n_all:>8}{ni:>10,}{nd:>8,}')
+    print(f'{"合计":<16}{"":>8}{"":>8}{total_ins:>10,}{total_del:>8,}')
+    print(f'→ 预计吃写额度 ≈ {cost:,}（= 插入 {total_ins:,}×2 + 删除 {total_del:,}×1；'
+          f'D1 把索引写入也计一行，2026-09-17 受控实验实测）')
+    if cost > MAX_WRITE_ROWS and not args.allow_bulk:
+        print(f'\n[FAIL] 预计吃写额度 {cost:,}，超过上限 {MAX_WRITE_ROWS:,}（D1 免费版日额度 100,000）。')
         print('       确认无误请加 --allow-bulk；只补变化请去掉 --full。')
         raise SystemExit(1)
 
@@ -421,8 +441,9 @@ def main():
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     with open(OUT, 'w') as f:
         f.write(sql_text)
-    print(f'\nOK → {OUT}（{len(sql_text.splitlines())} 行 SQL，估算写 {total:,} 行）')
-    if total:
+    print(f'\nOK → {OUT}（{len(sql_text.splitlines())} 行 SQL，插入 {total_ins:,} / 删除 {total_del:,}，'
+          f'预计吃写额度 ≈ {cost:,}）')
+    if total_ins or total_del:
         print(f'     执行：python3 scripts/cf_d1.py exec data/detail_seed.sql')
 
 
