@@ -149,12 +149,16 @@ def build_sql(a):
             + vals
         )
 
+    # swing 类不做估值（只短线操作、不判断便宜）→ 合理估值带一律留空，与站点既有 swing 约定一致
+    buy_range_sql = '[]' if a.category == 'swing' else parse_buy_range(a.buy_range)
+    if a.category == 'swing' and a.buy_range.strip() not in ('', '[]'):
+        print(f'  ℹ️  swing 类不做估值：忽略 --buy-range {a.buy_range}，按 [] 写入')
     stocks_sql = (
         "INSERT INTO stocks (code, name, sector, category, subtype, tags, desc, pe_current, pe_date, ttm_buy_range, buy_range_type, tracked, added_at) VALUES "
         f"('{a.code}', '{q(a.name)}', '{q(a.sector)}', '{a.category}', '{q(a.subtype or '')}', "
         f"'{q(parse_tags(a.tags))}', '{q(a.desc or '')}', "
         f"{a.pe if a.pe is not None else 'NULL'}, '{a.pe_date or ''}', "
-        f"'{parse_buy_range(a.buy_range)}', '{a.buy_range_type}', {1 if a.tracked else 0}, "
+        f"'{buy_range_sql}', '{a.buy_range_type}', {1 if a.tracked else 0}, "
         f"'{a.added_at or ''}')"
     )
     parts = [stocks_sql]

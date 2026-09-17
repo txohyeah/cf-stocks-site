@@ -59,6 +59,7 @@ def build_stocks() -> str:
         items = json.load(f)
     rows = []
     for s in items:
+        # swing 类只做短线、不做估值判断 → 合理估值带一律留空（u4 归档里残留的 swing 带不再带入）
         pc = s.get('peCurrent')
         pc_sql = 'NULL'
         if pc not in (None, ''):
@@ -72,7 +73,7 @@ def build_stocks() -> str:
             f"'{sql_escape(to_json_str(s.get('tags', [])))}', '{sql_escape(s.get('desc', ''))}', "
             f"{pc_sql}, "
             f"'{sql_escape(s.get('peDate', ''))}', "
-            f"'{sql_escape(to_json_str(s.get('ttmBuyRange', [])))}', "
+            f"'{sql_escape('[]' if s.get('industryCat') == 'swing' else to_json_str(s.get('ttmBuyRange', [])))}', "
             f"'{sql_escape(s.get('buyRangeType', 'pe'))}', "
             f"{1 if s.get('tracked', True) else 0}, '{sql_escape(s.get('addedAt', ''))}')")
     stmt = "INSERT OR REPLACE INTO stocks (code, name, sector, category, subtype, tags, desc, pe_current, pe_date, ttm_buy_range, buy_range_type, tracked, added_at) VALUES\n" + ",\n".join(rows) + ";\n"
