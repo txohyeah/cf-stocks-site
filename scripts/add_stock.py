@@ -45,9 +45,25 @@ def q(s: str) -> str:
 
 
 def parse_tags(s: str) -> str:
+    """解析标签串（逗号分隔）。
+
+    防呆：容忍调用方直接传 JSON 数组形态 '["a","b"]'。
+    历史 bug（2026-09-17 修复）：这样传会被 split(',') 拆成 '"a"' 这类带引号的碎片，
+    再被 json.dumps 二次转义，页面显示成 "a" 带引号（受影响 6 只：家联科技、中望软件、
+    金橙子、奥比中光、索辰科技、思看科技）。
+    """
     if not s:
         return '[]'
-    tags = [t.strip() for t in s.split(',') if t.strip()]
+    s = s.strip()
+    if s.startswith('[') and s.endswith(']'):
+        try:
+            v = json.loads(s)
+            if isinstance(v, list):
+                return json.dumps([str(x).strip() for x in v if str(x).strip()],
+                                  ensure_ascii=False)
+        except Exception:
+            s = s[1:-1]
+    tags = [t.strip().strip('"').strip("'") for t in s.split(',') if t.strip()]
     return json.dumps(tags, ensure_ascii=False)
 
 
