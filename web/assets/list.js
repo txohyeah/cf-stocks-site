@@ -8,8 +8,13 @@ const CATS = [
   ['dividend', '💎 分红企业'],
   ['sunset', '🌇 夕阳龙头'],
   ['explosion', '🔥 产业爆发'],
+  ['bottom', '🎯 底线定价'],
 ];
 const CAT_EMOJI = { core: '🏭', frontier: '🔮', swing: '⚡', dividend: '💎', sunset: '🌇' };
+/* 位置标签（存 stocks.tags，与 category 正交）：股价隐含叙事处于坐标轴最左端，
+   下行有业绩地板、上行是未定价的新叙事。判定三条＝贴区间下沿 + 地板为真 + 有新叙事。
+   注意：这是「价格位置」不是「产业位置」，故不进 CATS 的 category 语义，前端筛。 */
+const BOTTOM_TAG = '底线定价';
 const LINE_FILTERS = [
   ['', '全部产线'],
   ['mainline', '🏭 含主脉线'],
@@ -77,7 +82,7 @@ async function load() {
   }
   const params = new URLSearchParams();
   if (activeCat === 'recent') params.set('recent', '1');
-  else if (activeCat && activeCat !== 'explosion') params.set('category', activeCat);
+  else if (activeCat && activeCat !== 'explosion' && activeCat !== 'bottom') params.set('category', activeCat);
   if (activeCat === 'explosion' || activeLine) params.set('lineCat', activeCat === 'explosion' ? 'explosion' : activeLine);
   if (activeInd) params.set('industry', activeInd);
   if (q) params.set('q', q);
@@ -85,6 +90,8 @@ async function load() {
   const d = await r.json();
   if (!d.ok) { location.href = '/login'; return; }
   stocks = d.stocks;
+  // 🎯 底线定价是「位置标签」（存在 tags 里），后端没有对应 category，故前端筛
+  if (activeCat === 'bottom') stocks = stocks.filter(s => fmtTags(s.tags).includes(BOTTOM_TAG));
   renderTabs();
   renderLineFilter();
   renderCards();
@@ -98,6 +105,7 @@ function renderTabs() {
     if (!val) n = allStocks.length;
     else if (val === 'recent') n = allStocks.filter(s => (s.added_at || '') >= recentCutoff()).length;
     else if (val === 'explosion') n = allStocks.filter(s => (s.lines || []).some(l => l.lineCat === 'explosion')).length;
+    else if (val === 'bottom') n = allStocks.filter(s => fmtTags(s.tags).includes(BOTTOM_TAG)).length;
     else n = allStocks.filter(s => s.category === val).length;
     const btn = document.createElement('button');
     btn.className = 'tab' + (val === activeCat ? ' active' : '');
