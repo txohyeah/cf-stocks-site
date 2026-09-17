@@ -51,7 +51,8 @@ def unit_of(cell, key):
         return 'pe'
     if '元' in cell:
         return 'price'
-    if '亿' in cell and ('市值' in cell or '市值' in key):
+    if '亿' in cell and ('市值' in cell or '市值' in key or re.search(r'低估|合理|高估', key)):
+        # 档位表里的「亿」列 = 市值带（PS/PB 口径模块常只给市值 + 倍数两列）
         return 'mv'
     return None
 
@@ -145,7 +146,7 @@ def main():
             lo = hi = None
         st = s['buy_range_type']
         pe = s['pe_current']
-        shares = (mv * 1e8 / price) if (mv and price) else None
+        shares = (mv * 1e4 / price) if (mv and price) else None  # total_mv 本地库单位=万元 → 股本(股)
         mb = parse_band(band_by.get(code, [])) if code in band_by else None
         rec = dict(code=code, name=s['name'], cat=s['category'], site=[lo, hi], site_type=st,
                    stated=stated.get(code), module=mb)
@@ -155,6 +156,15 @@ def main():
             continue
         # 同族优先：站点 pe 口径 → 抄模块 PE 列；站点价格口径 → 抄模块价格列；否则第一列转换
         fam = 'pe' if st in ('pe', 'pe-fwd', 'pe-core') else ('price' if st == 'price' else st)
+        if fam == 'pe' and 'pe' not in mb and st in ('pe-fwd', 'pe-core') and 'mv' in mb:
+            # 站点是前瞻 PE 口径、模块只有市值/PS 口径：拿 TTM PE 反算会把口径搞混，只给参考价不判偏离
+            mlo0, mhi0, _ = mb['mv']
+            ref = to_price('mv', mlo0, mhi0, price, pe, shares)
+            rec['pick'] = 'mv'
+            rec['expect'] = [round(x, 2) for x in ref] if ref else None
+            rec['verdict'] = '口径不同(模块 mv/ps 口径，仅参考价)'
+            res.append(rec)
+            continue
         pick = fam if fam in mb else sorted(mb)[0]
         rec['pick'] = pick
         mlo, mhi, basis = mb[pick]
