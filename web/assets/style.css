@@ -281,6 +281,7 @@ td .dim { color: var(--muted); font-size: 12px; opacity: .6; }
 .m-date { color: var(--muted); font-size: 10px; margin-top: 2px; }
 
 .chart-info { color: var(--muted); font-size: 12px; margin-top: 8px; line-height: 1.7; }
+.chart-warn { color: #e8b339; font-size: 12px; margin-top: 6px; line-height: 1.7; }
 
 /* 红绿灯矩阵配色 */
 .blk-table td.g { color: var(--green); }

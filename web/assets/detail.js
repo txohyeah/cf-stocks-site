@@ -126,7 +126,7 @@ const RANGE_TIP = {
   ps: '合理 PS 带（倍）'
 };
 
-function peChartSVG(pe, buyRange) {
+function peChartSVG(pe, buyRange, stock) {
   if (!pe || pe.length < 2) return '<p class="empty-sm">暂无 PE 历史数据</p>';
   const W = 1000, H = 320, PAD = 52, TOP = 16;
   const vals = pe.map(p => p.pe_ttm);
@@ -162,12 +162,21 @@ function peChartSVG(pe, buyRange) {
     <text x="${(lastX - 8).toFixed(1)}" y="${(lastY - 10).toFixed(1)}" fill="#79b8ff" font-size="12" text-anchor="end" font-weight="700">${num(last.pe_ttm)}</text>`;
   const sorted = vals.slice().sort((a, b) => a - b);
   const med = pctRank(sorted, 0.5), p20 = pctRank(sorted, 0.2), p80 = pctRank(sorted, 0.8);
-  const info = `区间: ${fmtDate(pe[0].trade_date)} ~ ${fmtDate(last.trade_date)} | PE中位数: ${num(med, 1)}x | 20%~80%区间: ${num(p20, 1)}x ~ ${num(p80, 1)}x | 当前: ${num(last.pe_ttm, 1)}x`;
+  // ⚠️ 亏损股没有当期 PE（tushare 对 TTM 亏损不给 pe_ttm），这条尾巴可能停在几年前。
+  //    站点 pe_current 为空 = 官方口径「无当期 PE」——此时绝不能把尾值写成「当前」。
+  const noPe = !stock || !stock.pe_current;
+  const tailTxt = noPe
+    ? `尾值（截至 ${fmtDate(last.trade_date)}）: ${num(last.pe_ttm, 1)}x`
+    : `当前: ${num(last.pe_ttm, 1)}x`;
+  const info = `区间: ${fmtDate(pe[0].trade_date)} ~ ${fmtDate(last.trade_date)} | PE中位数: ${num(med, 1)}x | 20%~80%区间: ${num(p20, 1)}x ~ ${num(p80, 1)}x | ${tailTxt}`;
+  const warn = noPe
+    ? `<p class="chart-warn">⚠️ 无当期 PE：该股近年来 TTM 亏损（PE 分母为负，数据源因此不给 pe_ttm），上图只是历史区间、最后一笔在 ${fmtDate(last.trade_date)}，不能当作当前估值。</p>`
+    : '';
   return `<div class="pe-chart"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">
     ${grid}${xlabels}${band}
     <path d="${path}" fill="none" stroke="#4c9aff" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
     ${dot}
-  </svg><p class="chart-info">${info}</p></div>`;
+  </svg><p class="chart-info">${info}</p>${warn}</div>`;
 }
 
 /* ---------- 产业定位（u4 格式） ---------- */
@@ -408,7 +417,7 @@ async function load() {
   let html = renderHead(s, d.data);
   for (const id of tpl) {
     let body = '';
-    if (id === 'pe') body = peChartSVG(d.pe, peAxisRange(s));
+    if (id === 'pe') body = peChartSVG(d.pe, peAxisRange(s), s);
     else if (id === 'lines') body = renderLines(d);
     else if (id === 'modules') { const ms = renderModules(d); if (ms) html += ms; continue; }
     else if (id === 'poscheck') body = renderPosCheck(d);
