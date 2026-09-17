@@ -196,7 +196,9 @@ def main():
 
     s = sub.add_parser('save', help='把笔记写入 D1 macro_notes')
     s.add_argument('--date', required=True, help='归属日期 YYYYMMDD（发布日）')
-    s.add_argument('--kind', default='release', choices=['release', 'weekly'])
+    # regime = 定性层（sync_macro.py 自动写）；release = 数据发布批；weekly = 周度；
+    # fomc = 议息决议等政策事件（不在 macro_calendar，check 不会提示，属人工/agent 主动写）
+    s.add_argument('--kind', default='release', choices=['release', 'weekly', 'fomc'])
     s.add_argument('--title', default='')
     s.add_argument('--body', default='')
     s.add_argument('--body-file', default='')
