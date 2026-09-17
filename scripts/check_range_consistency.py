@@ -43,7 +43,11 @@ def one(sql):
 
 
 def unit_of(cell, key):
-    if re.search(r'PE|倍', cell, re.I):
+    if re.search(r'\bPB\b|市净率', cell, re.I):
+        return 'pb'
+    if re.search(r'\bPS\b|市销率', cell, re.I):
+        return 'ps'
+    if re.search(r'PE|倍', cell, re.I) or re.search(r'[\d.]\s*x\b', cell, re.I):
         return 'pe'
     if '元' in cell:
         return 'price'
@@ -53,30 +57,34 @@ def unit_of(cell, key):
 
 
 def parse_band(blocks):
-    """blocks: [(key, [cell,...]), ...] → (unit, lo, hi, basis) 或 None"""
-    cands = []
+    """blocks: [(key, [cell,...]), ...] → {单位: (lo, hi, 依据)}。
+
+    同一行可能同时给价格列与 PE 列（如「合理区 146.8-199.2 元｜PE(TTM) 70-95x」），
+    两者都收下来，交给 main() 按站点口径选同族那一列——模块的价格列会随 EPS 漂移，
+    PE 列才是耐用的锚，站点若是 pe 口径就直接抄 PE 列，不必用价格列反算。
+    """
+    per = {}
     for key, cells in blocks:
-        for cell in cells[1:2]:  # 第二列才是数值列
+        for cell in cells[1:]:  # 第一列是档位名，其余列可能同时给价格/PE/市值口径
             u = unit_of(cell, key)
             if not u:
                 continue
             nums = [abs(float(x)) for x in NUM.findall(cell)]
-            if len(nums) >= 2 and nums[1] > nums[0]:
-                cands.append((key, u, nums[0], nums[1]))
-            elif len(nums) == 1:
-                cands.append((key, u, nums[0], None))
-    for key, u, lo, hi in cands:
-        if '合理区' in key and hi:
-            return u, lo, hi, '合理区'
-    lo = lo_u = hi = hi_u = None
-    for key, u, a, b in cands:
-        if '低估区' in key and a is not None:
-            lo, lo_u = a, u
-        if '高估区' in key and a is not None:
-            hi, hi_u = a, u
-    if lo and hi and hi > lo:
-        return lo_u, lo, hi, '低估↔高估拼接'
-    return None
+            if not nums:
+                continue
+            if '合理区' in key and len(nums) >= 2 and nums[1] > nums[0]:
+                per.setdefault(u, {})['fair'] = (nums[0], nums[1])
+            elif '低估区' in key:
+                per.setdefault(u, {})['lo'] = max(nums)
+            elif '高估区' in key:
+                per.setdefault(u, {})['hi'] = min(nums)
+    out = {}
+    for u, v in per.items():
+        if 'fair' in v:
+            out[u] = (v['fair'][0], v['fair'][1], '合理区')
+        elif 'lo' in v and 'hi' in v and v['hi'] > v['lo']:
+            out[u] = (v['lo'], v['hi'], '低估↔高估拼接')
+    return out or None
 
 
 def to_price(unit, lo, hi, price, pe, shares):
@@ -145,32 +153,41 @@ def main():
             rec['verdict'] = '无档位表/无合理区'
             res.append(rec)
             continue
-        unit, mlo, mhi, basis = mb
-        p = to_price(unit, mlo, mhi, price, pe, shares)
-        if not p:
-            rec['verdict'] = '无法换算'
-            res.append(rec)
-            continue
-        plo, phi = p
-        if st == 'price':
-            slo, shi = plo, phi
-        elif st in ('pe', 'pe-fwd', 'pe-core'):
-            if not (price and pe):
-                rec['verdict'] = '无法换算(缺PE)'
+        # 同族优先：站点 pe 口径 → 抄模块 PE 列；站点价格口径 → 抄模块价格列；否则第一列转换
+        fam = 'pe' if st in ('pe', 'pe-fwd', 'pe-core') else ('price' if st == 'price' else st)
+        pick = fam if fam in mb else sorted(mb)[0]
+        rec['pick'] = pick
+        mlo, mhi, basis = mb[pick]
+        unit = pick
+        if unit == st:
+            # 同口径直接比（站点 pb × 模块 PB 列 / 站点 ps × 模块 PS 列），不需要行情源换算
+            slo, shi = mlo, mhi
+        else:
+            p = to_price(unit, mlo, mhi, price, pe, shares)
+            if not p:
+                rec['verdict'] = '无法换算'
                 res.append(rec)
                 continue
-            slo, shi = plo * pe / price, phi * pe / price
-        elif st == 'pb':
-            if not (price and pb):
-                rec['verdict'] = '无法换算(缺PB)'
+            plo, phi = p
+            if st == 'price':
+                slo, shi = plo, phi
+            elif st in ('pe', 'pe-fwd', 'pe-core'):
+                if not (price and pe):
+                    rec['verdict'] = '无法换算(缺PE)'
+                    res.append(rec)
+                    continue
+                slo, shi = plo * pe / price, phi * pe / price
+            elif st == 'pb':
+                if not (price and pb):
+                    rec['verdict'] = '无法换算(缺PB)'
+                    res.append(rec)
+                    continue
+                bps = price / pb
+                slo, shi = plo / bps, phi / bps
+            else:  # ps 等
+                rec['verdict'] = '无法换算(%s口径无源)' % st
                 res.append(rec)
                 continue
-            bps = price / pb
-            slo, shi = plo / bps, phi / bps
-        else:  # ps 等
-            rec['verdict'] = '无法换算(%s口径无源)' % st
-            res.append(rec)
-            continue
         rec['expect'] = [round(slo, 3), round(shi, 3)]
         if lo and hi:
             r1, r2 = lo / slo, hi / shi
@@ -196,12 +213,19 @@ def main():
         'code', 'name', 'cat', '站点区间', '模块带(原单位)', '应为(站点口径)', '判定'))
     print('-' * 140)
     order = ['⚠️便宜线偏高(假便宜)', '⚠️站点无有效区间', '🔵便宜线偏严(保守)', '🔵贵线偏松(漏报高估)', '🔵贵线偏严', '✅一致', '无法换算', '无档位表/无合理区']
-    for rec in sorted(res, key=lambda r: (order.index(r['verdict']), r['code'])):
+    def rank(r):
+        for i, v in enumerate(order):
+            if r['verdict'].startswith(v):
+                return i
+        return len(order)
+
+    for rec in sorted(res, key=lambda r: (rank(r), r['code'])):
         mb = rec['module']
         print('%-11s %-8s %-6s %-16s %-18s %-16s %s %s' % (
             rec['code'], rec['name'][:8], rec['cat'][:6],
             '%s~%s/%s' % (rec['site'][0], rec['site'][1], rec['site_type']),
-            '%s %s~%s%s' % (mb[0], mb[1], mb[2], '' if mb[3] == '合理区' else '[拼]') if mb else '—',
+            '%s %s~%s%s' % (rec.get('pick', ''), mb[rec['pick']][0], mb[rec['pick']][1],
+                              '' if mb[rec['pick']][2] == '合理区' else '[拼]') if mb else '—',
             '%.2f~%.2f' % tuple(rec['expect']) if 'expect' in rec else '—',
             rec['verdict'], rec.get('ratio', '')))
     cnt = {}
