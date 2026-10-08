@@ -229,7 +229,7 @@ function renderMoney(d) {
 }
 
 /* ---------- 🧭 框架条件变量体检（文章《产业投资框架》第 1 节定义） ---------- */
-const COND_ICON = { ok: '✅', warn: '⏳', bad: '❌', gap: '⛔', hike: '🔺' };
+const COND_ICON = { ok: '✅', warn: '⏳', bad: '❌', gap: '⛔', hike: '🔺', info: 'ℹ️' };
 function renderFramework(d) {
   const rows = d.conditions || [];
   const dly = d.daily || [];
@@ -261,7 +261,7 @@ function renderFramework(d) {
     <p class="mc-note">这 7 条条件变量原定义在文章 <a href="/article/investment-framework">《产业投资框架 · 从宏观到个股的完整方法论》</a> §1.3「当前判断」——
       每条都在回答<b>"什么情况下这个框架的判断是错的"</b>。2026-09-16 起该节从文章迁到本页（文章只讲方法论，见页内说明），
       条件定义也随之由本页维护。<b>自动</b>项由 D1 每日刷新（tushare：美债/汇率；新浪外盘：布伦特/WTI）；
-      <b>手工</b>项来自公开新闻（库内无数据源，录入在 scripts/macro_manual.json）。本轮更新：${esc(updated)}。</p>`;
+      <b>手工</b>项来自公开新闻（库内无数据源，录入在 scripts/macro_manual.json）。第 8 行「长期锚」（2026-09-18 新增）只陈述终点与位移、不参与定性推导。本轮更新：${esc(updated)}。</p>`;
 }
 
 /* ---------- 📝 解读笔记（模型/人工撰写层，与"自动判定层"分开放） ---------- */
@@ -314,12 +314,15 @@ function renderRegime(d) {
         ｜ 来源：${esc(SRC_LABEL[r.source] || r.source || '—')}</div>
       <div class="note-body">${mdLite(r.body_md)}</div>
     </article>`;
-  return `<div class="rg-now">${esc(cur.title)}</div>
-    <div class="rg-meta">定性自 ${dateCn(cur.note_date)} 起 ｜ 数据口径 ${dcn(cur.as_of || cur.note_date)}
+  const lt = (d.conditions || []).find(x => x.cond_key === 'regime_lt');
+  return `<div class="rg-now"><b>短期｜</b>${esc(cur.title)}</div>
+    ${lt ? `<div class="rg-now"><b>长期｜</b>${esc(lt.current_text)}</div>` : ''}
+    <div class="rg-meta">短期定性自 ${dateCn(cur.note_date)} 起 ｜ 数据口径 ${dcn(cur.as_of || cur.note_date)}
       ｜ 来源：${esc(SRC_LABEL[cur.source] || cur.source || '—')} ｜ 历史记录 ${rows.length} 条</div>
     <div class="rg-body">${mdLite(cur.body_md)}</div>
     ${hist.length ? `<details class="note-more"><summary>历史定性（更早 ${hist.length} 条）</summary>${hist.map(one).join('')}</details>` : ''}
     <p class="mc-note">这层是<b>结论</b>：只在定性变化时新增一条（不做每日流水，除非人工/模型另写）。
+      「短期」＝当前相位，换挡即改、文本不写数字；「长期」＝本轮通道的终点与终点位移（手工锚，每次 SEP/FOMC 核对、变了才改，不参与定性推导）。
       依据的每日实测在「🩺 框架条件变量体检」，每次分析在「📝 解读笔记」。本层自 2026-09-16 起从文章 §1.3 迁到本页。</p>`;
 }
 
@@ -483,9 +486,9 @@ async function load() {
   document.getElementById('mc-asof').textContent =
     `发布日历至 ${dateCn(asOf.cal)} ｜ 月度序列至 ${monthCn(asOf.ser)} ｜ 日频至 ${dateCn(asOf.dly)}`;
   document.getElementById('mc-body').innerHTML = `
-    <div class="mc-panel mc-panel-regime"><h3>🧭 当前宏观定性 <span class="muted" style="font-size:12px">先看结论：框架现在处在哪一层（自动判定，只在定性变化时留档）</span></h3>
+    <div class="mc-panel mc-panel-regime"><h3>🧭 当前宏观定性 <span class="muted" style="font-size:12px">先看结论：短期＝框架现在处在哪一层（自动判定，变化才留档）；长期＝本轮通道的终点与终点位移（手工锚，随 SEP/FOMC 更新）</span></h3>
       ${renderRegime(d)}</div>
-    <div class="mc-panel mc-panel-cond"><h3>🩺 框架条件变量体检 <span class="muted" style="font-size:12px">7 条条件逐条对账——每条都在回答"什么情况下上面这个判断是错的"</span></h3>
+    <div class="mc-panel mc-panel-cond"><h3>🩺 框架条件变量体检 <span class="muted" style="font-size:12px">7 条框架条件逐条对账（每条都在回答"什么情况下上面这个判断是错的"）+ 1 条长期锚（ℹ️ 信息行，不参与判定）</span></h3>
       ${renderFramework(d)}</div>
     <div class="mc-panel mc-panel-note" id="mc-notes"><h3>📝 解读笔记 <span class="muted" style="font-size:12px">有数据发布时才写（模型撰写，带时间戳）——每次宏观分析的结论都在这</span></h3>
       ${renderNotes(d)}</div>

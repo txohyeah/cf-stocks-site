@@ -363,6 +363,17 @@ def condition_rows(conn, now):
             'bad', '弱（外部松、内部弱）',
             'tushare macro_calendar / cn_m（每月自动）', 'auto',
             '钱躺着不动 + 信贷断崖：外资回流与内需弱同时成立，只看一边都会看偏', 7)
+
+    # ⑧ 长期锚（2026-09-18 新增：定性卡第二行）——只陈述官方剧本与终点位移，不参与定性推导
+    #    （刻意不进 REGIME_CHECKS：regime_text() 不读它，SEP 微调远端不会触发定性"换挡"刷历史）
+    lt = manual.get('regime_lt', {})
+    if lt:
+        add('regime_lt', '长期锚（通道终点与终点位移）',
+            '官方剧本：本轮通道有尽头；盯中性利率的逐次位移',
+            lt.get('text', ''),
+            lt.get('kind', 'info'), lt.get('status', '锚（随 SEP/FOMC 更新）'),
+            lt.get('source', '美联储 SEP 点阵图（手工录入）'), 'manual',
+            lt.get('note', f'手工项，as_of={lt.get("as_of", "—")}；每次 SEP/FOMC 核对，变了才改'), 8)
     return rows
 
 
