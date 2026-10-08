@@ -9,3 +9,5 @@ data/
 
 # 本机私有路径/凭据（路径脱敏用）
 scripts/paths.py
+# 临时脚本（一次性脚本目录，不入库）
+temp_script/
